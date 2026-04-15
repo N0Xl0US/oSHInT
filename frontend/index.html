@@ -1,0 +1,1422 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSINT Control Panel</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap");
+
+    :root {
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --ink: #111827;
+      --subtle: #5b6475;
+      --line: #d8dee8;
+      --brand: #0f766e;
+      --brand-deep: #0b3f3d;
+      --brand-soft: #ccfbf1;
+      --ok: #14532d;
+      --warn: #9a3412;
+      --glow: 0 18px 36px rgba(16, 24, 40, 0.09);
+      --radius-lg: 18px;
+      --radius-md: 12px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(960px 520px at -5% -20%, #c7e9ff 0%, transparent 55%),
+        radial-gradient(860px 360px at 120% -10%, #b7f7de 0%, transparent 52%),
+        var(--bg);
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+    }
+
+    .wrap {
+      max-width: 1220px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(135deg, var(--brand-deep), var(--brand) 62%, #175f39 100%);
+      color: #e7fff5;
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      box-shadow: var(--glow);
+      animation: riseIn 320ms ease-out;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -120px;
+      top: -90px;
+      width: 320px;
+      height: 220px;
+      background: radial-gradient(circle at center, rgba(255, 255, 255, 0.28), transparent 72%);
+      pointer-events: none;
+    }
+
+    @keyframes riseIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .hero h1 {
+      margin: 0 0 6px;
+      font-size: 30px;
+      letter-spacing: 0.15px;
+    }
+
+    .hero p {
+      margin: 0;
+      color: #dbfff4;
+      max-width: 760px;
+      line-height: 1.4;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #e8fff7;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      box-shadow: var(--glow);
+      animation: riseIn 280ms ease-out;
+    }
+
+    .card h2,
+    .card h3 {
+      margin: 0;
+      letter-spacing: 0.15px;
+    }
+
+    .card-head {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .card-head p {
+      margin: 0;
+      font-size: 13px;
+      color: var(--subtle);
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: #f8fafc;
+      padding: 12px;
+    }
+
+    .panel h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+      color: #1e293b;
+    }
+
+    .panel-note {
+      font-size: 12px;
+      color: var(--subtle);
+      margin: -3px 0 10px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      color: var(--subtle);
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font: inherit;
+      background: #fff;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      outline: none;
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px var(--brand-soft);
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: wait;
+      transform: none;
+    }
+
+    .primary {
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .secondary {
+      background: #e2e8f0;
+      color: #0f172a;
+    }
+
+    .status {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font-size: 13px;
+      color: var(--subtle);
+      background: #f8fafc;
+    }
+
+    .status.ok {
+      color: var(--ok);
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+    }
+
+    .status.warn {
+      color: var(--warn);
+      border-color: #fed7aa;
+      background: #fff7ed;
+    }
+
+    .resume-upload {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #ffffff;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .resume-zone {
+      display: block;
+      border: 1px dashed #94a3b8;
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 12px;
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+
+    .resume-zone:hover {
+      border-color: var(--brand);
+      background: #f0fdfa;
+    }
+
+    .resume-title {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .resume-sub {
+      display: block;
+      margin-top: 3px;
+      font-size: 12px;
+      color: var(--subtle);
+    }
+
+    .resume-native {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .resume-meta {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--subtle);
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+    }
+
+    .intake-summary {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 9px 10px;
+      font-size: 12px;
+      color: var(--subtle);
+      line-height: 1.45;
+      white-space: pre-line;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(100px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .kpi {
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    .kpi .k {
+      font-size: 11px;
+      color: var(--subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .kpi .v {
+      font-size: 20px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 12px;
+      color: var(--subtle);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .table-wrap table {
+      margin-top: 0;
+    }
+
+    .table-wrap th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+      z-index: 1;
+    }
+
+    .source-details {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #ffffff;
+      padding: 10px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .source-details.empty {
+      color: var(--subtle);
+      background: #f8fafc;
+    }
+
+    .detail-section {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 10px;
+    }
+
+    .detail-section h4 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--subtle);
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 8px 12px;
+      font-size: 12px;
+    }
+
+    .kv-item {
+      min-width: 0;
+    }
+
+    .kv-label {
+      color: var(--subtle);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.35px;
+    }
+
+    .kv-value {
+      margin-top: 2px;
+      word-break: break-word;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .mini-badge {
+      border: 1px solid #99f6e4;
+      background: #ecfeff;
+      color: #115e59;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .detail-note {
+      font-size: 12px;
+      color: var(--subtle);
+      margin-top: 6px;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    pre {
+      margin: 8px 0 0;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 12px;
+      border: 1px solid #1f2937;
+      padding: 12px;
+      max-height: 360px;
+      overflow: auto;
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 980px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+      }
+
+      .kpis {
+        grid-template-columns: repeat(2, minmax(100px, 1fr));
+      }
+
+      .kv-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero h1 {
+        font-size: 25px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <div class="hero-head">
+        <div>
+          <h1>OSINT Control Panel</h1>
+          <p>
+            One clean screen for multi-source identity resolution, source-specific runs, and live pipeline diagnostics.
+          </p>
+        </div>
+        <div class="chip">Maigret + Academic + GitHub + LinkedIn + Holehe + H8mail</div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div class="card-head">
+          <h2>Full Identity Resolution</h2>
+          <p>Merge claims, resolve with Splink, and publish to identity.resolved.</p>
+        </div>
+
+        <div class="panel">
+          <form id="resolve-form">
+            <div class="row">
+              <div class="field">
+                <label for="name">Name</label>
+                <input id="name" name="name" placeholder="Elon Musk" />
+              </div>
+              <div class="field">
+                <label for="username">Username (optional)</label>
+                <input id="username" name="username" placeholder="elonmusk" />
+              </div>
+              <div class="field">
+                <label for="email">Email (optional)</label>
+                <input id="email" name="email" placeholder="target@example.com" />
+              </div>
+              <div class="field">
+                <label for="linkedin-url">LinkedIn URL (optional)</label>
+                <input id="linkedin-url" name="linkedinUrl" placeholder="https://linkedin.com/in/username" />
+              </div>
+              <div class="field">
+                <label for="institution">Institution (optional)</label>
+                <input id="institution" name="institution" placeholder="SpaceX" />
+              </div>
+            </div>
+            <div class="resume-upload">
+              <label class="resume-zone" for="resume-file">
+                <span class="resume-title">Primary Input: Resume Upload</span>
+                <span class="resume-sub">Choose PDF or DOCX. If omitted, the pipeline falls back to name-based discovery.</span>
+              </label>
+              <input id="resume-file" class="resume-native" name="resume" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+              <div id="resume-file-meta" class="resume-meta">No resume selected.</div>
+              <div class="actions">
+                <button class="secondary" id="clear-resume" type="button">Clear Resume</button>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="primary" id="run-resolve" type="submit">Run Full Pipeline</button>
+              <button class="secondary" id="load-demo" type="button">Load Demo Data</button>
+            </div>
+          </form>
+          <div id="resolve-status" class="status">Ready.</div>
+          <div id="intake-summary" class="intake-summary">No intake metadata yet.</div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="k">Total Claims</div><div class="v" id="k-claims">0</div></div>
+          <div class="kpi"><div class="k">Clusters</div><div class="v" id="k-clusters">0</div></div>
+          <div class="kpi"><div class="k">Golden Records</div><div class="v" id="k-golden">0</div></div>
+          <div class="kpi"><div class="k">Kafka Published</div><div class="v" id="k-kafka">0</div></div>
+        </div>
+
+        <div class="stack" style="margin-top: 12px;">
+          <div class="panel">
+            <h3>Source Stats</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Source</th><th>Claims</th><th>Platforms</th><th>Success</th><th>Error</th><th>Elapsed</th></tr>
+                </thead>
+                <tbody id="sources-body"></tbody>
+              </table>
+            </div>
+
+            <div style="margin-top: 10px;">
+              <h3>GitHub Octosuite Details</h3>
+              <div id="octo-details" class="source-details empty">
+                Run a resolution to view profile, repositories, PR events, org memberships, and technical profile details.
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>Golden Records</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Entity</th><th>Confidence</th><th>Method</th><th>Aliases</th><th>Sources</th><th>Platforms</th><th>Quarantined</th></tr>
+                </thead>
+                <tbody id="golden-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h2>Source-Specific OSINT</h2>
+          <p>Run each source independently when you need targeted checks.</p>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <h3>Platform Health</h3>
+            <div class="actions">
+              <button class="secondary" id="check-health" type="button">Check API + Kafka</button>
+            </div>
+            <div id="health-status" class="status">Waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h3>Raw Maigret Producer</h3>
+            <form id="raw-form">
+              <div class="row">
+                <div class="field">
+                  <label for="raw-username">Username</label>
+                  <input id="raw-username" name="rawUsername" placeholder="billgatesclear" required />
+                </div>
+                <div class="field">
+                  <label for="min-confidence">Min Confidence</label>
+                  <select id="min-confidence" name="minConfidence">
+                    <option value="0.3" selected>0.30</option>
+                    <option value="0.4">0.40</option>
+                    <option value="0.5">0.50</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="verify-http">Verify HTTP</label>
+                  <select id="verify-http" name="verifyHttp">
+                    <option value="false" selected>false</option>
+                    <option value="true">true</option>
+                  </select>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="run-raw" type="submit">Publish Raw Event</button>
+              </div>
+            </form>
+            <div id="raw-status" class="status">Waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h3>GitHub Account Check</h3>
+            <form id="gh-form">
+              <div class="row">
+                <div class="field">
+                  <label for="gh-username">Username</label>
+                  <input id="gh-username" name="ghUsername" placeholder="torvalds" required />
+                </div>
+                <div class="field">
+                  <label for="gh-min-confidence">Min Confidence</label>
+                  <select id="gh-min-confidence" name="ghMinConfidence">
+                    <option value="0.35" selected>0.35</option>
+                    <option value="0.5">0.50</option>
+                    <option value="0.7">0.70</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="gh-mode">Mode</label>
+                  <input id="gh-mode" value="public profile" disabled />
+                </div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="run-gh" type="submit">Run GitHub Check</button>
+              </div>
+            </form>
+            <div id="gh-status" class="status">Waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h3>LinkedIn Profile Check</h3>
+            <form id="linkedin-form">
+              <div class="row">
+                <div class="field">
+                  <label for="li-url">LinkedIn URL</label>
+                  <input id="li-url" name="liUrl" placeholder="https://linkedin.com/in/username" required />
+                </div>
+                <div class="field">
+                  <label for="li-mode">Mode</label>
+                  <input id="li-mode" value="profile url" disabled />
+                </div>
+                <div class="field">
+                  <label for="li-output">Output</label>
+                  <input id="li-output" value="resolve summary" disabled />
+                </div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="run-linkedin" type="submit">Run LinkedIn Check</button>
+              </div>
+            </form>
+            <div id="linkedin-status" class="status">Waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h3>Researcher OSINT</h3>
+            <form id="academic-form">
+              <div class="row">
+                <div class="field">
+                  <label for="acad-name">Researcher Name</label>
+                  <input id="acad-name" name="acadName" placeholder="Elon Musk" required />
+                </div>
+                <div class="field">
+                  <label for="acad-institution">Institution (optional)</label>
+                  <input id="acad-institution" name="acadInstitution" placeholder="MIT" />
+                </div>
+                <div class="field">
+                  <label for="acad-min-confidence">Min Confidence</label>
+                  <select id="acad-min-confidence" name="acadMinConfidence">
+                    <option value="0.3" selected>0.30</option>
+                    <option value="0.5">0.50</option>
+                    <option value="0.7">0.70</option>
+                  </select>
+                </div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="run-academic" type="submit">Run Researcher OSINT</button>
+              </div>
+            </form>
+            <div id="academic-status" class="status">Waiting.</div>
+          </div>
+
+          <div class="panel">
+            <h3>Pre-HMAC Claims (Raw)</h3>
+            <pre id="pre-hmac-view" class="mono">{}</pre>
+          </div>
+
+          <div class="panel">
+            <h3>Golden Records JSON (Post-HMAC)</h3>
+            <pre id="post-hmac-view" class="mono">{}</pre>
+          </div>
+
+          <div class="panel">
+            <h3>Last Response JSON</h3>
+            <pre id="json-view" class="mono">{}</pre>
+          </div>
+        </div>
+
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const resolveForm = document.getElementById("resolve-form");
+    const rawForm = document.getElementById("raw-form");
+    const ghForm = document.getElementById("gh-form");
+    const linkedinForm = document.getElementById("linkedin-form");
+    const academicForm = document.getElementById("academic-form");
+    const btnResolve = document.getElementById("run-resolve");
+    const btnRaw = document.getElementById("run-raw");
+    const btnGh = document.getElementById("run-gh");
+    const btnLinkedin = document.getElementById("run-linkedin");
+    const btnAcademic = document.getElementById("run-academic");
+    const btnDemo = document.getElementById("load-demo");
+    const btnHealth = document.getElementById("check-health");
+    const clearResumeBtn = document.getElementById("clear-resume");
+    const resumeInput = document.getElementById("resume-file");
+    const resumeMeta = document.getElementById("resume-file-meta");
+
+    const resolveStatus = document.getElementById("resolve-status");
+    const intakeSummary = document.getElementById("intake-summary");
+    const healthStatus = document.getElementById("health-status");
+    const rawStatus = document.getElementById("raw-status");
+    const ghStatus = document.getElementById("gh-status");
+    const linkedinStatus = document.getElementById("linkedin-status");
+    const academicStatus = document.getElementById("academic-status");
+
+    const kClaims = document.getElementById("k-claims");
+    const kClusters = document.getElementById("k-clusters");
+    const kGolden = document.getElementById("k-golden");
+    const kKafka = document.getElementById("k-kafka");
+
+    const sourcesBody = document.getElementById("sources-body");
+    const octoDetails = document.getElementById("octo-details");
+    const goldenBody = document.getElementById("golden-body");
+    const jsonView = document.getElementById("json-view");
+
+    const API_BASES = (() => {
+      const candidates = [window.location.origin, "http://127.0.0.1:8000", "http://localhost:8000"];
+      return [...new Set(candidates.filter(Boolean))];
+    })();
+
+    function setStatus(el, text, mode) {
+      el.textContent = text;
+      el.className = "status" + (mode ? " " + mode : "");
+    }
+
+    function setBusy(button, busy) {
+      button.disabled = busy;
+      button.textContent = busy ? "Running..." : button.dataset.label;
+    }
+
+    function queryString(data) {
+      const p = new URLSearchParams();
+      for (const [k, v] of Object.entries(data)) {
+        if (v !== undefined && v !== null && String(v).trim() !== "") {
+          p.set(k, String(v));
+        }
+      }
+      return p.toString();
+    }
+
+    function renderJSON(data) {
+      jsonView.textContent = JSON.stringify(data, null, 2);
+    }
+
+    function formatBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+      const units = ["B", "KB", "MB", "GB"];
+      const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+      const value = bytes / (1024 ** exp);
+      return `${value.toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+    }
+
+    function updateResumeMeta(file) {
+      if (!file) {
+        resumeMeta.textContent = "No resume selected.";
+        return;
+      }
+      resumeMeta.textContent = `Selected: ${file.name} (${formatBytes(file.size)})`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function renderIntakeSummary(data) {
+      const intake = data?.intake;
+      const plan = data?.source_plan;
+
+      if (!intake) {
+        intakeSummary.textContent = "No intake metadata available in this response.";
+        return;
+      }
+
+      const lines = [];
+      lines.push(`Mode: ${intake.mode || "direct"}`);
+      lines.push(`Resume uploaded: ${intake.resume_uploaded ? "yes" : "no"}`);
+
+      const resolved = intake.resolved_inputs || {};
+      lines.push(`Resolved name: ${resolved.name || "-"}`);
+      lines.push(`Resolved username: ${resolved.username || "-"}`);
+      lines.push(`Resolved email: ${resolved.email || "-"}`);
+      lines.push(`Resolved LinkedIn URL: ${resolved.linkedin_url || "-"}`);
+
+      const extracted = intake.extracted || null;
+      if (extracted) {
+        lines.push(`Extracted emails: ${(extracted.emails || []).join(", ") || "-"}`);
+        lines.push(`Extracted phones: ${(extracted.phones || []).join(", ") || "-"}`);
+        lines.push(`Extracted usernames: ${(extracted.usernames || []).join(", ") || "-"}`);
+
+        const extractedLinkedIn = (Array.isArray(extracted.links) ? extracted.links : [])
+          .find((entry) => entry && typeof entry === "object" && String(entry.platform || "").toLowerCase() === "linkedin");
+        lines.push(`Extracted LinkedIn URL: ${extractedLinkedIn?.url || "-"}`);
+
+        const linkLabels = (Array.isArray(extracted.links) ? extracted.links : []).map((entry) => {
+          if (!entry || typeof entry !== "object") return "";
+          const platform = String(entry.platform || "unknown");
+          const source = String(entry.source || "visible_text");
+          const url = String(entry.url || "");
+          if (!url) return "";
+          return `${platform} (${source}): ${url}`;
+        }).filter(Boolean);
+        lines.push(`Extracted links: ${linkLabels.join(" | ") || "-"}`);
+      }
+
+      if (plan && Array.isArray(plan.selected_sources)) {
+        lines.push(`Source plan: ${plan.selected_sources.join(" -> ")}`);
+      }
+
+      intakeSummary.textContent = lines.join("\n");
+    }
+
+    function renderResolve(data) {
+      kClaims.textContent = data.total_claims ?? 0;
+      kClusters.textContent = data.total_clusters ?? 0;
+      kGolden.textContent = data.golden_records_count ?? 0;
+      kKafka.textContent = data.kafka?.published ?? 0;
+
+      const sources = Array.isArray(data.sources) ? data.sources : [];
+      sourcesBody.innerHTML = sources.map((s) => {
+        const platforms = Array.isArray(s.platforms) && s.platforms.length > 0
+          ? s.platforms.join(", ")
+          : "-";
+        return `
+          <tr>
+            <td>${escapeHtml(s.source || "-")}</td>
+            <td>${escapeHtml(s.claims ?? 0)}</td>
+            <td>${escapeHtml(platforms)}</td>
+            <td>${s.success ? "yes" : "no"}</td>
+            <td>${escapeHtml(s.error || "-")}</td>
+            <td>${escapeHtml(s.elapsed_seconds ?? 0)}s</td>
+          </tr>
+        `;
+      }).join("");
+
+      renderGitHubOctosuiteDetails(data);
+
+      const records = Array.isArray(data.golden_records) ? data.golden_records : [];
+      goldenBody.innerHTML = records.slice(0, 40).map((r) => {
+        const platforms = Array.isArray(r.platforms) && r.platforms.length > 0
+          ? r.platforms.join(", ")
+          : "-";
+        return `
+          <tr>
+            <td class="mono">${escapeHtml((r.entity_id || "").slice(0, 8))}</td>
+            <td>${escapeHtml(r.confidence_score ?? 0)}</td>
+            <td>${escapeHtml(r.resolution_method || "-")}</td>
+            <td>${escapeHtml(r.alias_count ?? 0)}</td>
+            <td>${escapeHtml(r.source_count ?? 0)}</td>
+            <td>${escapeHtml(platforms)}</td>
+            <td>${r.quarantined ? "yes" : "no"}</td>
+          </tr>
+        `;
+      }).join("");
+
+      if (data && data.raw_claims_pre_hmac) {
+        document.getElementById("pre-hmac-view").textContent = JSON.stringify(data.raw_claims_pre_hmac, null, 2);
+      } else {
+        document.getElementById("pre-hmac-view").textContent = "{}";
+      }
+
+      if (data && data.golden_records_full) {
+        document.getElementById("post-hmac-view").textContent = JSON.stringify(data.golden_records_full, null, 2);
+      } else {
+        document.getElementById("post-hmac-view").textContent = "{}";
+      }
+
+      renderIntakeSummary(data);
+      renderJSON(data);
+    }
+
+    function getOctosuiteDetailsPayload(data) {
+      const direct = data?.source_details?.github_octosuite;
+      if (direct && typeof direct === "object") {
+        return Array.isArray(direct) ? direct[0] : direct;
+      }
+
+      const source = (Array.isArray(data?.sources) ? data.sources : [])
+        .find((entry) => entry?.source === "github_octosuite");
+      if (source?.details && typeof source.details === "object") {
+        return Array.isArray(source.details) ? source.details[0] : source.details;
+      }
+
+      return null;
+    }
+
+    function renderGitHubOctosuiteDetails(data) {
+      const details = getOctosuiteDetailsPayload(data);
+      if (!details) {
+        octoDetails.className = "source-details empty";
+        octoDetails.textContent = "No github_octosuite details returned in this run.";
+        return;
+      }
+
+      const profile = details.profile && typeof details.profile === "object" ? details.profile : {};
+      const repos = Array.isArray(details.repos) ? details.repos : [];
+      const pullRequests = Array.isArray(details.pull_request_events) ? details.pull_request_events : [];
+      const orgs = Array.isArray(details.orgs) ? details.orgs : [];
+      const langDist = details.language_distribution && typeof details.language_distribution === "object"
+        ? details.language_distribution
+        : {};
+      const technical = details.technical_profile && typeof details.technical_profile === "object"
+        ? details.technical_profile
+        : {};
+
+      const repoRows = repos.slice(0, 10).map((repo) => {
+        const name = escapeHtml(repo?.name || "-");
+        const language = escapeHtml(repo?.language || "-");
+        const stars = escapeHtml(repo?.stars ?? 0);
+        const forks = escapeHtml(repo?.forks ?? 0);
+        const updated = escapeHtml(repo?.updated_at || "-");
+        return `<tr><td>${name}</td><td>${language}</td><td>${stars}</td><td>${forks}</td><td>${updated}</td></tr>`;
+      }).join("");
+
+      const prRows = pullRequests.slice(0, 8).map((pr) => {
+        const target = escapeHtml(pr?.target_repo || "-");
+        const state = escapeHtml(pr?.pr_state || "-");
+        const title = escapeHtml(pr?.pr_title || "-");
+        const createdAt = escapeHtml(pr?.created_at || "-");
+        return `<tr><td>${target}</td><td>${state}</td><td>${title}</td><td>${createdAt}</td></tr>`;
+      }).join("");
+
+      const orgBadges = orgs.length
+        ? orgs.map((org) => {
+            const login = escapeHtml(org?.login || "unknown");
+            const display = escapeHtml(org?.display_name || "");
+            return `<span class="mini-badge">${login}${display ? ` (${display})` : ""}</span>`;
+          }).join("")
+        : "<span class=\"detail-note\">No organizations reported.</span>";
+
+      const langBadges = Object.entries(langDist).length
+        ? Object.entries(langDist)
+            .map(([lang, pct]) => `<span class="mini-badge">${escapeHtml(lang)} ${escapeHtml(pct)}%</span>`)
+            .join("")
+        : "<span class=\"detail-note\">No language distribution available.</span>";
+
+      const moreRepos = repos.length > 10
+        ? `<div class="detail-note">Showing 10 of ${escapeHtml(repos.length)} repositories.</div>`
+        : "";
+      const morePrs = pullRequests.length > 8
+        ? `<div class="detail-note">Showing 8 of ${escapeHtml(pullRequests.length)} pull request events.</div>`
+        : "";
+
+      octoDetails.className = "source-details";
+      octoDetails.innerHTML = `
+        <div class="detail-section">
+          <h4>Account Snapshot</h4>
+          <div class="kv-grid">
+            <div class="kv-item"><div class="kv-label">Display Name</div><div class="kv-value">${escapeHtml(profile.display_name || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Location</div><div class="kv-value">${escapeHtml(profile.location || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Company</div><div class="kv-value">${escapeHtml(profile.company || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Blog</div><div class="kv-value">${escapeHtml(profile.blog || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Public Repos</div><div class="kv-value">${escapeHtml(profile.public_repos ?? 0)}</div></div>
+            <div class="kv-item"><div class="kv-label">Followers / Following</div><div class="kv-value">${escapeHtml(profile.followers ?? 0)} / ${escapeHtml(profile.following ?? 0)}</div></div>
+            <div class="kv-item"><div class="kv-label">Created</div><div class="kv-value">${escapeHtml(profile.account_created_at || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Updated</div><div class="kv-value">${escapeHtml(profile.account_updated_at || "-")}</div></div>
+          </div>
+          <div class="detail-note">${escapeHtml(profile.bio || "No bio returned.")}</div>
+        </div>
+
+        <div class="detail-section">
+          <h4>Language Distribution</h4>
+          <div class="badge-row">${langBadges}</div>
+        </div>
+
+        <div class="detail-section">
+          <h4>Technical Profile</h4>
+          <div class="kv-grid">
+            <div class="kv-item"><div class="kv-label">Primary Language</div><div class="kv-value">${escapeHtml(technical.primary_language || "-")}</div></div>
+            <div class="kv-item"><div class="kv-label">Active Repos (12m)</div><div class="kv-value">${escapeHtml(technical.active_repo_count ?? 0)}</div></div>
+            <div class="kv-item"><div class="kv-label">Org Count</div><div class="kv-value">${escapeHtml(technical.org_count ?? 0)}</div></div>
+            <div class="kv-item"><div class="kv-label">Merged PRs</div><div class="kv-value">${escapeHtml(technical.merged_pr_count ?? 0)}</div></div>
+            <div class="kv-item"><div class="kv-label">External PRs</div><div class="kv-value">${escapeHtml(technical.external_pr_count ?? 0)}</div></div>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <h4>Organizations</h4>
+          <div class="badge-row">${orgBadges}</div>
+        </div>
+
+        <div class="detail-section">
+          <h4>Repositories</h4>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Name</th><th>Language</th><th>Stars</th><th>Forks</th><th>Updated</th></tr>
+              </thead>
+              <tbody>${repoRows || '<tr><td colspan="5">No repositories returned.</td></tr>'}</tbody>
+            </table>
+          </div>
+          ${moreRepos}
+        </div>
+
+        <div class="detail-section">
+          <h4>Pull Request Events</h4>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Target Repo</th><th>State</th><th>Title</th><th>Created</th></tr>
+              </thead>
+              <tbody>${prRows || '<tr><td colspan="4">No pull request events returned.</td></tr>'}</tbody>
+            </table>
+          </div>
+          ${morePrs}
+        </div>
+      `;
+    }
+
+    async function requestJson(path, init) {
+      let lastError = null;
+      let sawNotFound = false;
+
+      for (const base of API_BASES) {
+        const url = `${base}${path}`;
+
+        try {
+          const res = await fetch(url, init);
+          const text = await res.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            data = { raw: text };
+          }
+
+          if (!res.ok) {
+            const msg = data?.detail || data?.error || text || `HTTP ${res.status}`;
+            const err = new Error(msg);
+            err.status = res.status;
+            err.base = base;
+
+            // If endpoint was not found on this base, try the next candidate.
+            if (res.status === 404) {
+                sawNotFound = true;
+              lastError = err;
+              continue;
+            }
+            throw err;
+          }
+
+          return data;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+        }
+      }
+
+      const lastMessage = String(lastError?.message || "");
+      const networkLike = /networkerror|failed to fetch|load failed|fetch/i.test(lastMessage);
+      if (networkLike) {
+        const details = sawNotFound
+          ? "The endpoint may be missing on your running API instance."
+          : "The API server may be offline or blocked by CORS.";
+        throw new Error(`Cannot reach API. ${details} Tried: ${API_BASES.join(", ")}`);
+      }
+
+      throw lastError || new Error("Unable to reach API server");
+    }
+
+    async function callApi(path) {
+      return requestJson(path, { method: "GET" });
+    }
+
+    async function callApiForm(path, formData) {
+      return requestJson(path, { method: "POST", body: formData });
+    }
+
+    resolveForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const name = document.getElementById("name").value;
+      const username = document.getElementById("username").value;
+      const email = document.getElementById("email").value;
+      const linkedinUrl = document.getElementById("linkedin-url").value;
+      const institution = document.getElementById("institution").value;
+      const resumeFile = resumeInput.files[0];
+
+      if (!name && !username && !email && !linkedinUrl && !resumeFile) {
+        setStatus(resolveStatus, "Provide a resume or at least name, username, email, or LinkedIn URL.", "warn");
+        return;
+      }
+
+      setBusy(btnResolve, true);
+      setStatus(
+        resolveStatus,
+        resumeFile
+          ? `Running full identity resolution with resume: ${resumeFile.name}`
+          : "Running full identity resolution (name fallback mode)...",
+        "",
+      );
+
+      try {
+        const formData = new FormData();
+        if (resumeFile) formData.append("resume", resumeFile);
+        if (name) formData.append("name", name);
+        if (username) formData.append("username", username);
+        if (email) formData.append("email", email);
+        if (linkedinUrl) formData.append("linkedin_url", linkedinUrl);
+        if (institution) formData.append("institution", institution);
+
+        let data;
+        try {
+          data = await callApiForm("/resolve_identity_intake", formData);
+        } catch (err) {
+          const message = String(err?.message || err || "");
+          const isNotFound = message.toLowerCase().includes("not found") || err?.status === 404;
+
+          if (isNotFound && resumeFile) {
+            throw new Error(
+              "Resume intake endpoint not found. Restart the API using the latest code (maigret.main:app or maigret.server:app).",
+            );
+          }
+
+          if (isNotFound && !resumeFile) {
+            const qs = queryString({ name, username, email, linkedin_url: linkedinUrl, institution });
+            data = await callApi(`/resolve_identity?${qs}`);
+          } else {
+            throw err;
+          }
+        }
+
+        renderResolve(data);
+        const mode = data?.intake?.mode || "direct";
+        setStatus(resolveStatus, `Full pipeline completed (${mode}).`, "ok");
+      } catch (err) {
+        setStatus(resolveStatus, `Failed: ${err.message}`, "warn");
+      } finally {
+        setBusy(btnResolve, false);
+      }
+    });
+
+    rawForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const username = document.getElementById("raw-username").value;
+      const minConfidence = document.getElementById("min-confidence").value;
+      const verifyHttp = document.getElementById("verify-http").value;
+
+      setBusy(btnRaw, true);
+      setStatus(rawStatus, "Publishing raw Maigret event...", "");
+
+      try {
+        const qs = queryString({
+          username,
+          min_confidence: minConfidence,
+          verify_http: verifyHttp,
+          emit_kafka: true,
+        });
+        const data = await callApi(`/search_username_filtered?${qs}`);
+        renderJSON(data);
+        setStatus(rawStatus, "Raw event published to Kafka.", "ok");
+      } catch (err) {
+        setStatus(rawStatus, `Failed: ${err.message}`, "warn");
+      } finally {
+        setBusy(btnRaw, false);
+      }
+    });
+
+    ghForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const username = document.getElementById("gh-username").value;
+      const minConfidence = document.getElementById("gh-min-confidence").value;
+
+      setBusy(btnGh, true);
+      setStatus(ghStatus, "Running GitHub lookup...", "");
+
+      try {
+        const qs = queryString({ username, min_confidence: minConfidence });
+        const data = await callApi(`/search_github?${qs}`);
+        renderJSON(data);
+        setStatus(ghStatus, `GitHub complete. Claims: ${data.total_claims ?? 0}`, "ok");
+      } catch (err) {
+        setStatus(ghStatus, `GitHub failed: ${err.message}`, "warn");
+      } finally {
+        setBusy(btnGh, false);
+      }
+    });
+
+    linkedinForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const linkedinUrl = document.getElementById("li-url").value;
+
+      setBusy(btnLinkedin, true);
+      setStatus(linkedinStatus, "Running LinkedIn lookup...", "");
+
+      try {
+        const qs = queryString({ linkedin_url: linkedinUrl });
+        const data = await callApi(`/resolve_identity?${qs}`);
+        renderResolve(data);
+        setStatus(linkedinStatus, `LinkedIn complete. Claims: ${data.total_claims ?? 0}`, "ok");
+      } catch (err) {
+        setStatus(linkedinStatus, `LinkedIn failed: ${err.message}`, "warn");
+      } finally {
+        setBusy(btnLinkedin, false);
+      }
+    });
+
+    academicForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const name = document.getElementById("acad-name").value;
+      const institution = document.getElementById("acad-institution").value;
+      const minConfidence = document.getElementById("acad-min-confidence").value;
+
+      setBusy(btnAcademic, true);
+      setStatus(academicStatus, "Running researcher OSINT...", "");
+
+      try {
+        const qs = queryString({
+          name,
+          institution,
+          min_confidence: minConfidence,
+          emit_kafka: true,
+        });
+        const data = await callApi(`/search_academic?${qs}`);
+        renderJSON(data);
+        setStatus(
+          academicStatus,
+          `Academic complete. Authors found: ${data.total_authors_found ?? 0}`,
+          "ok",
+        );
+      } catch (err) {
+        setStatus(academicStatus, `Academic failed: ${err.message}`, "warn");
+      } finally {
+        setBusy(btnAcademic, false);
+      }
+    });
+
+    btnHealth.addEventListener("click", async () => {
+      try {
+        const h = await callApi("/health");
+        const r = await callApi("/ready");
+        setStatus(healthStatus, `Health: ${h.status} | Kafka: ${r.kafka}`, "ok");
+      } catch (err) {
+        setStatus(healthStatus, `Health check failed: ${err.message}`, "warn");
+      }
+    });
+
+    btnDemo.addEventListener("click", () => {
+      const demo = {
+        run_id: "demo-run",
+        username: "elonmusk",
+        total_claims: 31,
+        total_clusters: 9,
+        golden_records_count: 9,
+        kafka: { published: 9, failed: 0 },
+        sources: [
+          { source: "maigret", claims: 29, platforms: ["github", "x", "instagram"], success: true, error: null, elapsed_seconds: 58.2 },
+          { source: "academic", claims: 2, platforms: ["openalex", "semantic_scholar"], success: true, error: null, elapsed_seconds: 2.3 },
+          { source: "github_octosuite", claims: 1, platforms: ["github"], success: true, error: null, elapsed_seconds: 0.6 },
+          { source: "h8mail", claims: 1, platforms: ["linkedin"], success: true, error: null, elapsed_seconds: 0.7 }
+        ],
+        source_details: {
+          github_octosuite: {
+            profile: {
+              display_name: "Elon Musk",
+              location: "Texas, USA",
+              bio: "Technoking of Tesla, Imperator of Mars",
+              company: "@x",
+              blog: "https://x.com/elonmusk",
+              public_repos: 12,
+              followers: 120000,
+              following: 1,
+              account_created_at: "2010-06-04T00:00:00+00:00",
+              account_updated_at: "2026-04-14T00:00:00+00:00"
+            },
+            repos: [
+              { name: "open-source-rocket", language: "Python", stars: 1200, forks: 88, updated_at: "2026-04-10T09:00:00+00:00" },
+              { name: "neural-prototypes", language: "C++", stars: 940, forks: 61, updated_at: "2026-03-18T11:20:00+00:00" }
+            ],
+            pull_request_events: [
+              { target_repo: "owner/project-a", pr_state: "merged", pr_title: "Improve launch telemetry", created_at: "2026-02-11T13:00:00+00:00" }
+            ],
+            orgs: [
+              { login: "x", display_name: "X Corp" },
+              { login: "spacex", display_name: "SpaceX" }
+            ],
+            language_distribution: { Python: 52, "C++": 31, Rust: 17 },
+            technical_profile: {
+              primary_language: "Python",
+              active_repo_count: 7,
+              org_count: 2,
+              merged_pr_count: 5,
+              external_pr_count: 2
+            }
+          }
+        },
+        golden_records: [
+          { entity_id: "a1", confidence_score: 0.93, resolution_method: "probabilistic", alias_count: 6, source_count: 2, platforms: ["github", "linkedin"], quarantined: false },
+          { entity_id: "a2", confidence_score: 0.61, resolution_method: "probabilistic", alias_count: 2, source_count: 1, platforms: ["x"], quarantined: false },
+          { entity_id: "a3", confidence_score: 0.34, resolution_method: "probabilistic", alias_count: 1, source_count: 1, platforms: ["instagram"], quarantined: true }
+        ],
+        intake: {
+          mode: "resume",
+          resume_uploaded: true,
+          resolved_inputs: {
+            name: "Elon Musk",
+            username: "elonmusk",
+            email: "-",
+            linkedin_url: "https://linkedin.com/in/elonmusk",
+            institution: "-",
+          },
+          extracted: {
+            emails: ["contact@example.com"],
+            phones: ["+14155552671"],
+            usernames: ["elonmusk"],
+          },
+        },
+        source_plan: {
+          selected_sources: ["academic", "github", "linkedin", "holehe", "h8mail"],
+        },
+      };
+      renderResolve(demo);
+      setStatus(resolveStatus, "Loaded demo snapshot.", "ok");
+    });
+
+    resumeInput.addEventListener("change", () => {
+      updateResumeMeta(resumeInput.files[0]);
+    });
+
+    clearResumeBtn.addEventListener("click", () => {
+      resumeInput.value = "";
+      updateResumeMeta(null);
+    });
+
+    btnResolve.dataset.label = btnResolve.textContent;
+    btnRaw.dataset.label = btnRaw.textContent;
+    btnGh.dataset.label = btnGh.textContent;
+    btnLinkedin.dataset.label = btnLinkedin.textContent;
+    btnAcademic.dataset.label = btnAcademic.textContent;
+    updateResumeMeta(null);
+
+    btnHealth.click();
+  </script>
+</body>
+</html>
