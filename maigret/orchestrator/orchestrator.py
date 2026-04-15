@@ -683,8 +683,7 @@ class IdentityOrchestrator:
                 linkedin_url=linkedin_url,
             )
         )
-        threshold = self._config.min_confidence_linkedin
-        return [c for c in claims if c.confidence >= threshold]
+        return claims
 
     @staticmethod
     def _resolve_linkedin_url(linkedin_url: str | None) -> str | None:

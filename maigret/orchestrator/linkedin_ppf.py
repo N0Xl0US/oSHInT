@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+from types import SimpleNamespace
 
 try:
     from linkedin_scraper import BrowserManager, PersonScraper, login_with_cookie  # type: ignore[import-untyped]
@@ -249,6 +250,10 @@ def _extract_username_from_profile_url(profile_url: str) -> str:
     return "linkedin"
 
 
+def _count_non_empty(values: dict[str, Any]) -> int:
+    return sum(1 for value in values.values() if value not in (None, False, 0, "", [], {}, ()))
+
+
 class LinkedInPPF:
     """Playwright-backed LinkedIn adapter with defensive scrape controls."""
 
@@ -366,6 +371,17 @@ class LinkedInPPF:
                         "Verify the li_at cookie is fresh and not expired on LinkedIn's side."
                     ) from exc
 
+                if self._looks_rate_limited(message):
+                    logger.warning("%s: rate limited for %s | %s", _SOURCE, normalized_url, exc)
+                    return [
+                        self._build_url_anchor_claim(
+                            subject_query=subject_query,
+                            profile_url=normalized_url,
+                            scrape_limited=True,
+                            error_message=str(exc),
+                        )
+                    ]
+
                 logger.exception("%s: unexpected failure while scraping %s", _SOURCE, normalized_url)
                 return []
 
@@ -428,6 +444,89 @@ class LinkedInPPF:
             )
             await self._publish_audit(profile_url=profile_url, claim=claim)
             return claim
+
+    @staticmethod
+    def _looks_rate_limited(message: str) -> bool:
+        keywords = (
+            "rate limit",
+            "rate-limited",
+            "checkpoint",
+            "captcha",
+            "too many requests",
+            "slow down",
+            "try again later",
+        )
+        return any(keyword in message for keyword in keywords)
+
+    def _build_url_anchor_claim(
+        self,
+        *,
+        subject_query: SubjectQuery,
+        profile_url: str,
+        scrape_limited: bool,
+        error_message: str | None = None,
+    ) -> IdentityClaim:
+        anchor_person = SimpleNamespace(
+            name=None,
+            headline=None,
+            location=None,
+            about=None,
+            open_to_work=False,
+            profile_picture_url=None,
+            connections_count=None,
+            follower_count=None,
+            languages=[],
+            contacts=[],
+            experiences=[],
+            educations=[],
+        )
+
+        claim = self._build_claim(
+            subject_query=subject_query,
+            person=anchor_person,
+            profile_url=profile_url,
+            force_needs_review=True,
+            session_expired=False,
+        )
+
+        raw_data = dict(claim.raw_data or {})
+        signal_groups = dict(raw_data.get("signal_groups") or {})
+        signal_groups["tier_1_identity_anchors"] = {
+            "canonical_url": profile_url,
+            "vanity_name": claim.username,
+            "full_name": None,
+            "headline": None,
+            "location": None,
+            "email": claim.email,
+        }
+        signal_groups["tier_2_profile_enrichment"] = {
+            "summary": None,
+            "profile_picture_url": None,
+            "connections_count": None,
+            "follower_count": None,
+            "is_open_to_work": False,
+            "languages": [],
+        }
+        signal_groups["tier_5_confidence_signals"] = {
+            "profile_completeness": 1,
+            "has_profile_photo": False,
+            "connection_degree": None,
+            "is_verified": False,
+            "activity_recency": None,
+        }
+
+        raw_data.update(
+            {
+                "scrape_limited": scrape_limited,
+                "scrape_error": error_message,
+                "signal_groups": signal_groups,
+            }
+        )
+        claim.raw_data = raw_data
+        claim.confidence = min(claim.confidence, 0.25)
+        claim.tier = "low"
+        claim.verified = False
+        return claim
 
     def _resolve_cookie_value(self) -> str:
         """Return the li_at cookie string from env override or session file."""
@@ -518,6 +617,18 @@ class LinkedInPPF:
         normalized_name = _normalize_name(name)
         headline = _normalize_text(getattr(person, "headline", None))
         location = _normalize_text(getattr(person, "location", None))
+        about = _normalize_text(getattr(person, "about", None))
+        open_to_work = bool(getattr(person, "open_to_work", False))
+
+        profile_picture_url = _normalize_text(
+            getattr(person, "profile_picture_url", None)
+            or getattr(person, "picture_url", None)
+            or getattr(person, "photo_url", None)
+        )
+        connections_count = self._normalize_optional_int(getattr(person, "connections_count", None))
+        follower_count = self._normalize_optional_int(getattr(person, "follower_count", None))
+        languages = self._serialize_languages(getattr(person, "languages", None))
+        contacts = self._serialize_contacts(getattr(person, "contacts", None))
 
         experiences = self._serialize_experiences(getattr(person, "experiences", None))
         educations = self._serialize_educations(getattr(person, "educations", None))
@@ -525,8 +636,28 @@ class LinkedInPPF:
         experience_count = len(experiences)
         education_count = len(educations)
 
-        current_company = experiences[0].get("company") if experiences else None
+        current_company = experiences[0].get("company_name") if experiences else None
         current_title = experiences[0].get("title") if experiences else None
+        current_company_linkedin_url = experiences[0].get("company_linkedin_url") if experiences else None
+        email = _normalize_text(getattr(subject_query, "email", None))
+
+        vanity_name = _extract_username_from_profile_url(profile_url)
+        profile_completeness = _count_non_empty(
+            {
+                "canonical_url": profile_url,
+                "vanity_name": vanity_name,
+                "full_name": name,
+                "headline": headline,
+                "location": location,
+            "email": email,
+                "summary": about,
+                "profile_picture_url": profile_picture_url,
+                "connections_count": connections_count,
+                "follower_count": follower_count,
+                "is_open_to_work": open_to_work,
+                "languages": languages,
+            }
+        )
 
         no_exp_or_edu = experience_count == 0 and education_count == 0
         needs_review = force_needs_review or not normalized_name or no_exp_or_edu
@@ -543,14 +674,51 @@ class LinkedInPPF:
             "normalized_name": normalized_name,
             "headline": headline,
             "location": location,
+            "about": about,
+            "open_to_work": open_to_work,
+            "profile_picture_url": profile_picture_url,
+            "connections_count": connections_count,
+            "follower_count": follower_count,
+            "languages": languages,
+            "contacts": contacts,
             "experiences": experiences,
             "educations": educations,
             "current_company": current_company,
             "current_title": current_title,
+            "current_company_linkedin_url": current_company_linkedin_url,
             "experience_count": experience_count,
             "education_count": education_count,
+            "profile_completeness": profile_completeness,
+            "has_profile_photo": bool(profile_picture_url),
             "needs_review": needs_review,
             "session_expired": session_expired,
+            "signal_groups": {
+                "tier_1_identity_anchors": {
+                    "canonical_url": profile_url,
+                    "vanity_name": vanity_name,
+                    "full_name": name,
+                    "headline": headline,
+                    "location": location,
+                    "email": email,
+                },
+                "tier_2_profile_enrichment": {
+                    "summary": about,
+                    "profile_picture_url": profile_picture_url,
+                    "connections_count": connections_count,
+                    "follower_count": follower_count,
+                    "is_open_to_work": open_to_work,
+                    "languages": languages,
+                },
+                "tier_3_employment_history": experiences,
+                "tier_4_education": educations,
+                "tier_5_confidence_signals": {
+                    "profile_completeness": profile_completeness,
+                    "has_profile_photo": bool(profile_picture_url),
+                    "connection_degree": None,
+                    "is_verified": None,
+                    "activity_recency": None,
+                },
+            },
         }
 
         institutions = [
@@ -559,7 +727,6 @@ class LinkedInPPF:
             if edu.get("institution")
         ]
 
-        email = _normalize_text(getattr(subject_query, "email", None))
         username = _extract_username_from_profile_url(profile_url)
 
         return IdentityClaim(
@@ -581,11 +748,25 @@ class LinkedInPPF:
         for item in values or []:
             rows.append(
                 {
-                    "title": _normalize_text(getattr(item, "title", None)),
-                    "company": _normalize_text(getattr(item, "company", None)),
+                    "company_name": _normalize_text(
+                        getattr(item, "institution_name", None)
+                        or getattr(item, "company_name", None)
+                        or getattr(item, "company", None)
+                    ),
+                    "company_linkedin_url": _normalize_text(getattr(item, "linkedin_url", None)),
+                    "title": _normalize_text(
+                        getattr(item, "position_title", None)
+                        or getattr(item, "title", None)
+                    ),
                     "location": _normalize_text(getattr(item, "location", None)),
-                    "start_date": _normalize_text(getattr(item, "start_date", None)),
-                    "end_date": _normalize_text(getattr(item, "end_date", None)),
+                    "start_date": _normalize_text(
+                        getattr(item, "from_date", None)
+                        or getattr(item, "start_date", None)
+                    ),
+                    "end_date": _normalize_text(
+                        getattr(item, "to_date", None)
+                        or getattr(item, "end_date", None)
+                    ),
                     "description": _normalize_text(getattr(item, "description", None)),
                 }
             )
@@ -597,14 +778,67 @@ class LinkedInPPF:
         for item in values or []:
             rows.append(
                 {
-                    "institution": _normalize_text(getattr(item, "institution", None)),
+                    "school_name": _normalize_text(
+                        getattr(item, "institution_name", None)
+                        or getattr(item, "institution", None)
+                        or getattr(item, "school_name", None)
+                    ),
+                    "school_linkedin_url": _normalize_text(getattr(item, "linkedin_url", None)),
                     "degree": _normalize_text(getattr(item, "degree", None)),
                     "field_of_study": _normalize_text(getattr(item, "field_of_study", None)),
-                    "start_date": _normalize_text(getattr(item, "start_date", None)),
-                    "end_date": _normalize_text(getattr(item, "end_date", None)),
+                    "start_date": _normalize_text(
+                        getattr(item, "from_date", None)
+                        or getattr(item, "start_date", None)
+                    ),
+                    "end_date": _normalize_text(
+                        getattr(item, "to_date", None)
+                        or getattr(item, "end_date", None)
+                    ),
+                    "description": _normalize_text(getattr(item, "description", None)),
                 }
             )
         return rows
+
+    @staticmethod
+    def _serialize_contacts(values: Any) -> list[dict[str, str | None]]:
+        rows: list[dict[str, str | None]] = []
+        for item in values or []:
+            rows.append(
+                {
+                    "type": _normalize_text(getattr(item, "type", None)),
+                    "value": _normalize_text(getattr(item, "value", None)),
+                    "label": _normalize_text(getattr(item, "label", None)),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _serialize_languages(values: Any) -> list[str]:
+        languages: list[str] = []
+        for item in values or []:
+            name = _normalize_text(getattr(item, "name", None) or getattr(item, "language", None))
+            if name:
+                languages.append(name)
+        return sorted(dict.fromkeys(languages))
+
+    @staticmethod
+    def _normalize_optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return None
+        match = re.search(r"\d[\d,]*", text)
+        if not match:
+            return None
+        try:
+            return int(match.group(0).replace(",", ""))
+        except ValueError:
+            return None
 
     @staticmethod
     def _compute_confidence(
