@@ -259,7 +259,9 @@ class LinkedInPPF:
 
     _counter_lock = asyncio.Lock()
     _delay_lock = asyncio.Lock()
+    _cooldown_lock = asyncio.Lock()
     _last_scrape_started_at: float | None = None
+    _rate_limit_cooldown_until: float | None = None
 
     def __init__(
         self,
@@ -292,6 +294,9 @@ class LinkedInPPF:
             float(scrape_timeout if scrape_timeout is not None else _env_float("LINKEDIN_SCRAPE_TIMEOUT", 30.0)),
         )
         self._headless = bool(headless if headless is not None else _env_bool("LINKEDIN_HEADLESS", True))
+        self._retry_backoff_base = max(0.0, _env_float("LINKEDIN_RETRY_BACKOFF_BASE", 2.0))
+        self._retry_backoff_max = max(self._retry_backoff_base, _env_float("LINKEDIN_RETRY_BACKOFF_MAX", 10.0))
+        self._rate_limit_cooldown_seconds = max(0.0, _env_float("LINKEDIN_RATE_LIMIT_COOLDOWN", 900.0))
 
     async def run(self, subject_query: SubjectQuery) -> list[IdentityClaim]:
         """Run LinkedIn profile scrape for one SubjectQuery and return 0..1 claim."""
@@ -309,6 +314,22 @@ class LinkedInPPF:
         else:
             _validate_session_file(self._session_path)
             self._session_cookie = self._read_cookie_from_session_file()
+
+        cooldown_remaining = await self._cooldown_remaining_seconds()
+        if cooldown_remaining > 0:
+            message = (
+                "LinkedIn rate-limit cooldown active. "
+                f"Retry after approximately {int(cooldown_remaining)}s."
+            )
+            logger.warning("%s: %s", _SOURCE, message)
+            return [
+                self._build_url_anchor_claim(
+                    subject_query=subject_query,
+                    profile_url=normalized_url,
+                    scrape_limited=True,
+                    error_message=message,
+                )
+            ]
 
         max_attempts = 2
         last_exc: Exception | None = None
@@ -347,7 +368,7 @@ class LinkedInPPF:
                 )
                 last_exc = asyncio.TimeoutError()
                 if attempt < max_attempts:
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(self._retry_backoff_seconds(attempt))
                     continue
                 return []
 
@@ -364,7 +385,7 @@ class LinkedInPPF:
                         fresh = _session_cookie_from_env()
                         if fresh:
                             self._session_cookie = fresh
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(self._retry_backoff_seconds(attempt))
                         continue
                     raise LinkedInSessionExpiredError(
                         "LinkedIn authentication failed after retry. "
@@ -373,6 +394,7 @@ class LinkedInPPF:
 
                 if self._looks_rate_limited(message):
                     logger.warning("%s: rate limited for %s | %s", _SOURCE, normalized_url, exc)
+                    await self._activate_rate_limit_cooldown()
                     return [
                         self._build_url_anchor_claim(
                             subject_query=subject_query,
@@ -527,6 +549,34 @@ class LinkedInPPF:
         claim.tier = "low"
         claim.verified = False
         return claim
+
+    def _retry_backoff_seconds(self, attempt: int) -> float:
+        if self._retry_backoff_base <= 0:
+            return 0.0
+        seconds = self._retry_backoff_base * (2 ** max(0, attempt - 1))
+        return min(self._retry_backoff_max, seconds)
+
+    async def _activate_rate_limit_cooldown(self) -> None:
+        if self._rate_limit_cooldown_seconds <= 0:
+            return
+
+        async with self._cooldown_lock:
+            loop = asyncio.get_running_loop()
+            new_until = loop.time() + self._rate_limit_cooldown_seconds
+            existing = self.__class__._rate_limit_cooldown_until
+            if existing is None or new_until > existing:
+                self.__class__._rate_limit_cooldown_until = new_until
+
+    async def _cooldown_remaining_seconds(self) -> float:
+        async with self._cooldown_lock:
+            until = self.__class__._rate_limit_cooldown_until
+            if until is None:
+                return 0.0
+            now = asyncio.get_running_loop().time()
+            if now >= until:
+                self.__class__._rate_limit_cooldown_until = None
+                return 0.0
+            return until - now
 
     def _resolve_cookie_value(self) -> str:
         """Return the li_at cookie string from env override or session file."""
