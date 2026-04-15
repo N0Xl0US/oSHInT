@@ -206,7 +206,7 @@ def normalize_linkedin_profile_url(value: str | None) -> str | None:
     if segments[0].lower() != "in":
         return None
 
-    slug = segments[1].strip()
+    slug = segments[1].strip().strip(" |,.;:!?)]}>\"'")
     if not slug:
         return None
 

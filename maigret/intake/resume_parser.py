@@ -230,6 +230,11 @@ def _normalize_url(value: str) -> str | None:
     if not cleaned:
         return None
 
+    # Some resume hyperlink targets are stored as bare domains/paths
+    # (for example linkedin.com/in/handle) without an explicit scheme.
+    if re.match(r"^(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:/.*)?$", cleaned, re.IGNORECASE):
+        cleaned = f"https://{cleaned.lstrip('/')}"
+
     try:
         parts = urlsplit(cleaned)
     except Exception:
@@ -252,8 +257,8 @@ def _normalize_url(value: str) -> str | None:
 def _clean_url_candidate(value: str) -> str:
     cleaned = value.strip()
     cleaned = cleaned.lstrip("([<{\"'")
-    cleaned = cleaned.rstrip(".,;:!?)]}>\"'")
-    return cleaned
+    cleaned = cleaned.rstrip(".,;:!?|)]}>\"'")
+    return cleaned.strip()
 
 
 def _classify_platform(url: str) -> str:
