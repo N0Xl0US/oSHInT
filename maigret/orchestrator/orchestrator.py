@@ -2,7 +2,7 @@
 orchestrator/orchestrator.py — IdentityOrchestrator: the 5-step pipeline.
 
 Step 1: Fan-out — kick off Maigret, Academic, GitHubOctosuite, Blackbird,
-                   SpiderFoot, Holehe, H8mail in parallel
+                   SpiderFoot, Holehe in parallel
 Step 2: Claim Collection — gather all IdentityClaim objects into one list
 Step 3: Feed into Splink — pass unified claims to SplinkResolver
 Step 4: Build Golden Records — assemble resolved identity objects
@@ -30,7 +30,6 @@ from maigret.kafka.producer import get_kafka_producer
 from maigret.orchestrator.config import OrchestratorConfig, get_orchestrator_config
 from maigret.orchestrator.blackbird_source import BlackbirdSource
 from maigret.orchestrator.spiderfoot_source import SpiderFootSource
-from maigret.orchestrator.h8mail_source import H8mailSource
 from maigret.orchestrator.holehe_source import HoleheSource
 from maigret.orchestrator.maigret_source import MaigretSource
 from maigret.resolver.golden import build_golden_records
@@ -131,7 +130,7 @@ class IdentityOrchestrator:
 
     Sources invoked in parallel:
         username → maigret, github_octosuite, blackbird
-        email    → holehe, h8mail, blackbird, spiderfoot
+        email    → holehe, blackbird, spiderfoot
         name     → academic
 
     Usage::
@@ -183,7 +182,6 @@ class IdentityOrchestrator:
             sources_selected.append("academic")
         if target_emails:
             sources_selected.append("holehe")
-            sources_selected.append("h8mail")
         if explicit_username or target_emails:
             sources_selected.append("blackbird")
         if target_emails:
@@ -227,7 +225,6 @@ class IdentityOrchestrator:
             "mode": mode,
             "selected_sources": sources_selected,
             "holehe_enabled": bool(target_emails),
-            "h8mail_enabled": bool(target_emails),
             "blackbird_enabled": bool(explicit_username or target_emails),
             "blackbird_query_type": blackbird_query_type,
             "blackbird_query_types": blackbird_query_types,
@@ -377,7 +374,7 @@ class IdentityOrchestrator:
                 self._run_source(
                     "maigret",
                     self._invoke_maigret(username),
-                    self._config.maigret_timeout,
+                    self._effective_timeout("maigret", self._config.maigret_timeout),
                 )
             )
 
@@ -425,7 +422,7 @@ class IdentityOrchestrator:
                 self._run_source(
                     "linkedin",
                     self._invoke_linkedin(linkedin_url, email=emails[0] if emails else None),
-                    self._config.linkedin_timeout,
+                    self._effective_timeout("linkedin", self._config.linkedin_timeout),
                 )
             )
 
@@ -435,13 +432,6 @@ class IdentityOrchestrator:
                     "holehe",
                     self._invoke_holehe_many(emails),
                     self._config.holehe_timeout,
-                )
-            )
-            tasks.append(
-                self._run_source(
-                    "h8mail",
-                    self._invoke_h8mail_many(emails),
-                    self._config.h8mail_timeout,
                 )
             )
 
@@ -503,6 +493,19 @@ class IdentityOrchestrator:
             stat.elapsed_seconds = asyncio.get_event_loop().time() - start
             logger.error("Orchestrator: %s failed — %s", source_name, exc)
             return [], stat
+
+    def _effective_timeout(self, source_name: str, timeout: int) -> int:
+        """
+        Compute orchestrator timeout used by asyncio.wait_for for a source.
+
+        Some source adapters already enforce their own internal timeout and may
+        run cleanup/retry logic right at that boundary. Adding a small grace
+        window prevents premature outer cancellation.
+        """
+        if source_name in {"maigret", "linkedin"}:
+            grace = max(0, int(self._config.nested_timeout_grace_seconds))
+            return timeout + grace
+        return timeout
 
     @staticmethod
     def _extract_source_details(
@@ -656,18 +659,6 @@ class IdentityOrchestrator:
         """Invoke Holehe for multiple emails and merge deduplicated claims."""
         return await self._invoke_many(emails, self._invoke_holehe)
 
-    async def _invoke_h8mail(self, email: str) -> list[IdentityClaim]:
-        """Invoke h8mail datasource and return IdentityClaims."""
-        source = H8mailSource(request_timeout=min(self._config.h8mail_timeout, 60))
-        return await source.search(
-            email=email,
-            min_confidence=self._config.min_confidence_h8mail,
-        )
-
-    async def _invoke_h8mail_many(self, emails: list[str]) -> list[IdentityClaim]:
-        """Invoke h8mail for multiple emails and merge deduplicated claims."""
-        return await self._invoke_many(emails, self._invoke_h8mail)
-
     async def _invoke_linkedin(
         self,
         linkedin_url: str,
@@ -683,7 +674,8 @@ class IdentityOrchestrator:
                 linkedin_url=linkedin_url,
             )
         )
-        return claims
+        threshold = self._config.min_confidence_linkedin
+        return [c for c in claims if c.confidence >= threshold]
 
     @staticmethod
     def _resolve_linkedin_url(linkedin_url: str | None) -> str | None:

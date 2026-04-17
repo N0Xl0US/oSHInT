@@ -7,7 +7,7 @@ AI-enabled OSINT pipeline with two execution surfaces:
 
 Core flow:
 
-1. Collect claims from one or more sources (Maigret, Blackbird, Holehe, H8mail, SpiderFoot, GitHub, Academic, LinkedIn)
+1. Collect claims from one or more sources (Maigret, Blackbird, Holehe, SpiderFoot, GitHub, Academic, LinkedIn)
 2. Score/filter raw signals into normalized identity claims
 3. Resolve claims into clustered entities (Splink-based linker)
 4. Build golden records
@@ -25,7 +25,7 @@ Core flow:
 - Python 3.12+
 - Pip and virtualenv
 - Kafka broker reachable from your machine (for publish/readiness behavior)
-- Optional source binaries/tools configured in environment (Holehe, H8mail, Blackbird, SpiderFoot)
+- Optional source binaries/tools configured in environment (Holehe, Blackbird, SpiderFoot)
 
 ## Setup
 
@@ -59,7 +59,6 @@ KAFKA_TOPIC=osint.raw.maigret.v1
 
 # Source binaries (set to real paths in your environment)
 HOLEHE_BINARY=/absolute/path/to/holehe
-H8MAIL_BINARY=/absolute/path/to/h8mail
 BLACKBIRD_BINARY=/absolute/path/to/blackbird.py
 BLACKBIRD_ROOT=/absolute/path/to/blackbird
 SPIDERFOOT_BINARY=/absolute/path/to/spiderfoot-wrapper.sh
@@ -109,7 +108,6 @@ UI:
 - `GET /search_username_filtered` - Maigret + scoring/filter pipeline
 - `GET /search_academic` - academic source lookup
 - `GET /search_github` - GitHub source lookup
-- `GET /search_h8mail` - email breach/source lookup
 - `GET /resolve_identity` - orchestrated fan-out + entity resolution
 - `POST /resolve_identity_intake` - resume-driven intake then identity resolution
 

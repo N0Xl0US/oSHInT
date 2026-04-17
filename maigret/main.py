@@ -48,7 +48,6 @@ from maigret.runner import (
     run_maigret,
 )
 from maigret.orchestrator.github_source import GitHubSource
-from maigret.orchestrator.h8mail_source import H8mailSource
 from maigret.intake import ResumeParseError, parse_resume_bytes
 
 logger = logging.getLogger(__name__)
@@ -69,8 +68,8 @@ _NAME_TOOL_SUGGESTIONS: list[dict[str, str]] = [
         "reason": "Try a handle derived from the person's name for quick account validation.",
     },
     {
-        "tool": "search_h8mail",
-        "reason": "Use for additional breach-signal enrichment when an email is available.",
+        "tool": "resolve_identity",
+        "reason": "Use coordinated multi-source identity resolution for combined inputs.",
     },
 ]
 
@@ -443,38 +442,6 @@ async def search_github(
     }
 
 
-@app.get("/search_h8mail")
-async def search_h8mail(
-    email: str,
-    min_confidence: float = 0.45,
-):
-    """Run h8mail email lookup and return identity claims."""
-    source = H8mailSource()
-    try:
-        claims = await source.search(email=email, min_confidence=min_confidence)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    return {
-        "query": email,
-        "source": "h8mail",
-        "total_claims": len(claims),
-        "profiles": [
-            {
-                "platform": c.platform,
-                "url": c.url,
-                "username": c.username,
-                "confidence": c.confidence,
-                "tier": c.tier,
-                "verified": c.verified,
-                "source_tool": c.source_tool,
-                "email": c.email,
-            }
-            for c in claims
-        ],
-    }
-
-
 @app.get("/resolve_identity")
 async def resolve_identity(
     username: str | None = None,
@@ -484,7 +451,7 @@ async def resolve_identity(
     institution: str | None = None,
 ):
     """
-    Trigger full identity resolution across Maigret, Academic, GitHub, Holehe, and H8mail.
+    Trigger full identity resolution across Maigret, Academic, GitHub, Holehe, and related sources.
 
     Accepts either:
         - username only
@@ -585,6 +552,9 @@ async def resolve_identity_intake(
         seen_emails.add(normalized)
         deduped_emails.append(normalized)
 
+    if not email and deduped_emails:
+        email = deduped_emails[0]
+
     if not username and not name and not email and not linkedin_url:
         raise HTTPException(
             status_code=422,
@@ -598,7 +568,7 @@ async def resolve_identity_intake(
         username=username,
         name=name,
         email=email,
-        emails=deduped_emails if len(deduped_emails) > 1 else None,
+        emails=deduped_emails if deduped_emails else None,
         linkedin_url=linkedin_url,
         institution=institution,
     )

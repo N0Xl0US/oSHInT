@@ -142,39 +142,13 @@ TOOL_SEARCH_GITHUB = {
     },
 }
 
-TOOL_SEARCH_H8MAIL = {
-    "type": "function",
-    "function": {
-        "name": "search_h8mail",
-        "description": (
-            "Run h8mail email lookup for a target email address and return "
-            "identity claims when breach signals exist."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "email": {
-                    "type": "string",
-                    "description": "Target email address to investigate",
-                },
-                "min_confidence": {
-                    "type": "number",
-                    "description": "Minimum confidence score (0.0-1.0) required in output",
-                    "default": 0.45,
-                },
-            },
-            "required": ["email"],
-        },
-    },
-}
-
 TOOL_RESOLVE_IDENTITY = {
     "type": "function",
     "function": {
         "name": "resolve_identity",
         "description": (
             "Run a full identity resolution pipeline: fans out to Maigret, "
-            "Academic, GitHub, Holehe, H8mail, and LinkedIn URL intelligence in parallel, collects all identity claims, "
+            "Academic, GitHub, Holehe, and LinkedIn URL intelligence in parallel, collects all identity claims, "
             "feeds them into Splink for entity resolution, builds golden records, "
             "and publishes to identity.resolved. Use this for comprehensive "
             "identity resolution that combines all available OSINT sources."
@@ -213,7 +187,6 @@ ALL_TOOLS = [
     TOOL_SEARCH_USERNAME,
     TOOL_SEARCH_ACADEMIC,
     TOOL_SEARCH_GITHUB,
-    TOOL_SEARCH_H8MAIL,
     TOOL_RESOLVE_IDENTITY,
     TOOL_PARSE_URL,
     TOOL_CHECK_HEALTH,
@@ -236,8 +209,6 @@ def get_tools_for_context(
             ordered.append(tool)
             added.add(tool_name)
 
-    if email:
-        add(TOOL_SEARCH_H8MAIL)
     if name:
         add(TOOL_SEARCH_ACADEMIC)
     if (name or email) and (username or name or email):
@@ -343,33 +314,6 @@ async def execute_tool(
                         "verified": c.verified,
                         "email": c.email,
                         "institutions": c.institutions,
-                        "source": c.source_tool,
-                    }
-                    for c in claims
-                ],
-            }, indent=2)
-
-        elif tool_name == "search_h8mail":
-            from maigret.orchestrator.h8mail_source import H8mailSource
-
-            source = H8mailSource()
-            claims = await source.search(
-                email=arguments["email"],
-                min_confidence=float(arguments.get("min_confidence", 0.45)),
-            )
-            return json.dumps({
-                "tool": "h8mail",
-                "email": arguments["email"],
-                "total_claims": len(claims),
-                "profiles": [
-                    {
-                        "platform": c.platform,
-                        "url": c.url,
-                        "username": c.username,
-                        "email": c.email,
-                        "confidence": c.confidence,
-                        "tier": c.tier,
-                        "verified": c.verified,
                         "source": c.source_tool,
                     }
                     for c in claims

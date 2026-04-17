@@ -27,8 +27,8 @@ class OrchestratorConfig(BaseSettings):
     blackbird_timeout: int = 240       # Blackbird may scan hundreds of sites
     spiderfoot_timeout: int = 120      # SpiderFoot username scans can take time
     holehe_timeout: int = 45           # Holehe checks many sites concurrently
-    h8mail_timeout: int = 60           # h8mail can run breach lookups for longer
     linkedin_timeout: int = 45         # LinkedIn profile scrape is single-target but can be slow
+    nested_timeout_grace_seconds: int = 15  # avoid premature outer timeout for nested runners
 
     # ── Confidence thresholds (passed to sources) ────────────────────────
     min_confidence_maigret: float = 0.3
@@ -38,7 +38,6 @@ class OrchestratorConfig(BaseSettings):
     min_confidence_blackbird: float = 0.45
     min_confidence_spiderfoot: float = 0.45
     min_confidence_holehe: float = 0.45
-    min_confidence_h8mail: float = 0.45
     min_confidence_linkedin: float = 0.45
 
     # ── Kafka ────────────────────────────────────────────────────────────

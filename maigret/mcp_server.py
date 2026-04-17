@@ -159,7 +159,7 @@ async def resolve_identity(
 
     Notes:
       - Username-only sources run only when username is explicitly provided.
-            - Holehe and H8mail are used whenever email is available.
+            - Holehe is used whenever email is available.
     """
     if not username and not name and not email and not linkedin_url:
         return {"error": "Provide at least one of: username, name, email, or linkedin_url"}

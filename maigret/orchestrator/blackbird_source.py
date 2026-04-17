@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from maigret.agent.report import IdentityClaim
 
@@ -138,12 +139,21 @@ class BlackbirdSource:
             if not isinstance(account, dict):
                 continue
 
+            url = _normalise_url(account)
+            unreliable_endpoint = _is_unreliable_endpoint(url)
+            has_metadata = _has_metadata(account)
+
+            # Blackbird frequently emits API/search probe URLs that are not
+            # durable user profiles; drop weak API-only hits early.
+            if unreliable_endpoint and not has_metadata:
+                continue
+
             confidence = _score_account(account)
             if confidence < float(min_confidence):
                 continue
 
             platform = _normalise_platform(account)
-            url = _normalise_url(account)
+            status = str(account.get("status") or "").strip().lower()
 
             claims.append(
                 IdentityClaim(
@@ -153,8 +163,12 @@ class BlackbirdSource:
                     email=default_email,
                     confidence=round(confidence, 3),
                     tier=_to_tier(confidence),
-                    verified=True,
+                    verified=(status in {"found", "claimed", "active"} and not unreliable_endpoint),
                     source_tool="blackbird",
+                    raw_data={
+                        "blackbird_status": status,
+                        "unreliable_endpoint": unreliable_endpoint,
+                    },
                 )
             )
 
@@ -281,8 +295,9 @@ def _normalise_url(account: dict[str, Any]) -> str | None:
 
 
 def _score_account(account: dict[str, Any]) -> float:
-    score = 0.62
-    if _normalise_url(account):
+    score = 0.56
+    url = _normalise_url(account)
+    if url:
         score += 0.08
 
     status = str(account.get("status") or "").strip().lower()
@@ -292,7 +307,62 @@ def _score_account(account: dict[str, Any]) -> float:
     if account.get("category"):
         score += 0.04
 
+    if _has_metadata(account):
+        score += 0.06
+
+    # API/query probe endpoints frequently return false positives.
+    if _is_unreliable_endpoint(url):
+        score -= 0.30
+
     return min(score, 0.90)
+
+
+def _has_metadata(account: dict[str, Any]) -> bool:
+    metadata = account.get("metadata")
+    if metadata is None:
+        return False
+    if isinstance(metadata, list):
+        return len(metadata) > 0
+    if isinstance(metadata, dict):
+        return len(metadata) > 0
+    return bool(metadata)
+
+
+def _is_unreliable_endpoint(url: str | None) -> bool:
+    if not url:
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    lower_url = url.lower()
+
+    query_user_tokens = {
+        "username",
+        "usernames",
+        "user",
+        "account",
+        "screen_name",
+    }
+    has_user_query = any(f"{token}=" in query for token in query_user_tokens)
+
+    is_api_host = host.startswith("api") or ".api." in host
+
+    if is_api_host and has_user_query:
+        return True
+    if "search" in path:
+        return True
+    if "validate" in path:
+        return True
+    if "/info/user=" in lower_url:
+        return True
+
+    return False
 
 
 def _to_tier(confidence: float) -> str:

@@ -465,6 +465,37 @@
       margin-top: 6px;
     }
 
+    .repo-pager {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .repo-nav {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pager-btn {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border-radius: 999px;
+      background: #e2e8f0;
+      color: #0f172a;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .repo-pager .pager-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
     .mono {
       font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     }
@@ -594,13 +625,6 @@
               <h3>GitHub Octosuite Details</h3>
               <div id="octo-details" class="source-details empty">
                 Run a resolution to view profile, repositories, PR events, org memberships, and technical profile details.
-              </div>
-            </div>
-
-            <div style="margin-top: 10px;">
-              <h3>LinkedIn Details</h3>
-              <div id="linkedin-details" class="source-details empty">
-                Run a resolution or LinkedIn lookup to view identity anchors, enrichment, employment history, and education.
               </div>
             </div>
           </div>
@@ -797,9 +821,11 @@
 
     const sourcesBody = document.getElementById("sources-body");
     const octoDetails = document.getElementById("octo-details");
-    const linkedinDetails = document.getElementById("linkedin-details");
     const goldenBody = document.getElementById("golden-body");
     const jsonView = document.getElementById("json-view");
+    const REPO_PAGE_SIZE = 10;
+    let repoPage = 0;
+    let latestOctoDetails = null;
 
     const API_BASES = (() => {
       const candidates = [window.location.origin, "http://127.0.0.1:8000", "http://localhost:8000"];
@@ -926,7 +952,6 @@
       }).join("");
 
       renderGitHubOctosuiteDetails(data);
-      renderLinkedInDetails(data);
 
       const records = Array.isArray(data.golden_records) ? data.golden_records : [];
       goldenBody.innerHTML = records.slice(0, 40).map((r) => {
@@ -977,181 +1002,15 @@
       return null;
     }
 
-    function getLinkedInDetailsPayload(data) {
-      const direct = data?.source_details?.linkedin;
-      if (direct && typeof direct === "object") {
-        return Array.isArray(direct) ? direct[0] : direct;
-      }
-
-      const source = (Array.isArray(data?.sources) ? data.sources : [])
-        .find((entry) => entry?.source === "linkedin");
-      if (source?.details && typeof source.details === "object") {
-        return Array.isArray(source.details) ? source.details[0] : source.details;
-      }
-
-      return null;
-    }
-
-    function renderLinkedInDetails(data) {
-      const details = getLinkedInDetailsPayload(data);
-      if (!details) {
-        linkedinDetails.className = "source-details empty";
-        linkedinDetails.textContent = "No linkedin details returned in this run.";
-        return;
-      }
-
-      const anchors = details.signal_groups?.tier_1_identity_anchors && typeof details.signal_groups.tier_1_identity_anchors === "object"
-        ? details.signal_groups.tier_1_identity_anchors
-        : {
-            canonical_url: details.canonical_url || details.url || "-",
-            vanity_name: details.vanity_name || details.username || "-",
-            full_name: details.name || "-",
-            headline: details.headline || "-",
-            location: details.location || "-",
-            email: details.email || "-",
-          };
-
-      const enrichment = details.signal_groups?.tier_2_profile_enrichment && typeof details.signal_groups.tier_2_profile_enrichment === "object"
-        ? details.signal_groups.tier_2_profile_enrichment
-        : {
-            summary: details.about || "-",
-            profile_picture_url: details.profile_picture_url || "-",
-            connections_count: details.connections_count ?? 0,
-            follower_count: details.follower_count ?? 0,
-            is_open_to_work: details.open_to_work ? "yes" : "no",
-            languages: Array.isArray(details.languages) ? details.languages : [],
-          };
-
-      const employment = Array.isArray(details.signal_groups?.tier_3_employment_history)
-        ? details.signal_groups.tier_3_employment_history
-        : Array.isArray(details.experiences)
-          ? details.experiences
-          : [];
-
-      const education = Array.isArray(details.signal_groups?.tier_4_education)
-        ? details.signal_groups.tier_4_education
-        : Array.isArray(details.educations)
-          ? details.educations
-          : [];
-
-      const confidence = details.signal_groups?.tier_5_confidence_signals && typeof details.signal_groups.tier_5_confidence_signals === "object"
-        ? details.signal_groups.tier_5_confidence_signals
-        : {
-            profile_completeness: details.profile_completeness ?? 0,
-            has_profile_photo: details.has_profile_photo ? "yes" : "no",
-            connection_degree: details.connection_degree || "-",
-            is_verified: details.is_verified ?? "-",
-            activity_recency: details.activity_recency || "-",
-          };
-
-      const contactLines = Array.isArray(details.contacts) && details.contacts.length > 0
-        ? details.contacts.map((contact) => {
-            if (!contact || typeof contact !== "object") return "";
-            const type = escapeHtml(contact.type || "contact");
-            const label = escapeHtml(contact.label || "");
-            const value = escapeHtml(contact.value || "");
-            return `<span class="mini-badge">${type}${label ? `: ${label}` : ""}${value ? ` = ${value}` : ""}</span>`;
-          }).join("")
-        : "<span class=\"detail-note\">No contacts returned.</span>";
-
-      const languageBadges = Array.isArray(enrichment.languages) && enrichment.languages.length > 0
-        ? enrichment.languages.map((lang) => `<span class="mini-badge">${escapeHtml(lang)}</span>`).join("")
-        : "<span class=\"detail-note\">No languages returned.</span>";
-
-      const employmentRows = employment.slice(0, 8).map((row) => {
-        const company = escapeHtml(row?.company_name || row?.company || "-");
-        const companyUrl = escapeHtml(row?.company_linkedin_url || "-");
-        const title = escapeHtml(row?.title || row?.position_title || "-");
-        const startDate = escapeHtml(row?.start_date || row?.from_date || "-");
-        const endDate = escapeHtml(row?.end_date || row?.to_date || "-");
-        const location = escapeHtml(row?.location || "-");
-        const description = escapeHtml(row?.description || "-");
-        return `<tr><td>${company}${companyUrl !== "-" ? `<div class="detail-note">${companyUrl}</div>` : ""}</td><td>${title}</td><td>${startDate}</td><td>${endDate}</td><td>${location}</td><td>${description}</td></tr>`;
-      }).join("");
-
-      const educationRows = education.slice(0, 8).map((row) => {
-        const school = escapeHtml(row?.school_name || row?.institution || "-");
-        const schoolUrl = escapeHtml(row?.school_linkedin_url || "-");
-        const degree = escapeHtml(row?.degree || "-");
-        const field = escapeHtml(row?.field_of_study || "-");
-        const startDate = escapeHtml(row?.start_date || row?.from_date || "-");
-        const endDate = escapeHtml(row?.end_date || row?.to_date || "-");
-        const description = escapeHtml(row?.description || "-");
-        return `<tr><td>${school}${schoolUrl !== "-" ? `<div class="detail-note">${schoolUrl}</div>` : ""}</td><td>${degree}</td><td>${field}</td><td>${startDate}</td><td>${endDate}</td><td>${description}</td></tr>`;
-      }).join("");
-
-      linkedinDetails.className = "source-details";
-      linkedinDetails.innerHTML = `
-        <div class="detail-section">
-          <h4>Tier 1 - Identity Anchors</h4>
-          <div class="kv-grid">
-            <div class="kv-item"><div class="kv-label">Canonical URL</div><div class="kv-value">${escapeHtml(anchors.canonical_url || details.url || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Vanity Name</div><div class="kv-value">${escapeHtml(anchors.vanity_name || details.username || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Full Name</div><div class="kv-value">${escapeHtml(anchors.full_name || details.name || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Headline</div><div class="kv-value">${escapeHtml(anchors.headline || details.headline || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Location</div><div class="kv-value">${escapeHtml(anchors.location || details.location || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Email</div><div class="kv-value">${escapeHtml(anchors.email || details.email || "-")}</div></div>
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <h4>Tier 2 - Profile Enrichment</h4>
-          <div class="kv-grid">
-            <div class="kv-item"><div class="kv-label">Summary / About</div><div class="kv-value">${escapeHtml(enrichment.summary || details.about || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Profile Picture</div><div class="kv-value">${escapeHtml(enrichment.profile_picture_url || details.profile_picture_url || "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Connections</div><div class="kv-value">${escapeHtml(enrichment.connections_count ?? details.connections_count ?? 0)}</div></div>
-            <div class="kv-item"><div class="kv-label">Followers</div><div class="kv-value">${escapeHtml(enrichment.follower_count ?? details.follower_count ?? 0)}</div></div>
-            <div class="kv-item"><div class="kv-label">Open to Work</div><div class="kv-value">${(enrichment.is_open_to_work ?? details.open_to_work) ? "yes" : "no"}</div></div>
-          </div>
-          <div style="margin-top: 8px;">
-            <div class="detail-note">Languages</div>
-            <div class="badge-row">${languageBadges}</div>
-          </div>
-          <div style="margin-top: 8px;">
-            <div class="detail-note">Contacts</div>
-            <div class="badge-row">${contactLines}</div>
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <h4>Tier 3 - Employment History</h4>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Company</th><th>Title</th><th>Start</th><th>End</th><th>Location</th><th>Description</th></tr>
-              </thead>
-              <tbody>${employmentRows || '<tr><td colspan="6">No employment history returned.</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <h4>Tier 4 - Education</h4>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>School</th><th>Degree</th><th>Field</th><th>Start</th><th>End</th><th>Description</th></tr>
-              </thead>
-              <tbody>${educationRows || '<tr><td colspan="6">No education records returned.</td></tr>'}</tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <h4>Tier 5 - Confidence Signals</h4>
-          <div class="kv-grid">
-            <div class="kv-item"><div class="kv-label">Profile Completeness</div><div class="kv-value">${escapeHtml(confidence.profile_completeness ?? details.profile_completeness ?? 0)}</div></div>
-            <div class="kv-item"><div class="kv-label">Has Profile Photo</div><div class="kv-value">${(confidence.has_profile_photo ?? details.has_profile_photo) ? "yes" : "no"}</div></div>
-            <div class="kv-item"><div class="kv-label">Connection Degree</div><div class="kv-value">${escapeHtml(confidence.connection_degree ?? details.connection_degree ?? "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Verified</div><div class="kv-value">${String(confidence.is_verified ?? details.is_verified ?? "-")}</div></div>
-            <div class="kv-item"><div class="kv-label">Activity Recency</div><div class="kv-value">${escapeHtml(confidence.activity_recency ?? details.activity_recency ?? "-")}</div></div>
-          </div>
-        </div>
-      `;
-    }
-
     function renderGitHubOctosuiteDetails(data) {
       const details = getOctosuiteDetailsPayload(data);
+      latestOctoDetails = details && typeof details === "object" ? details : null;
+      repoPage = 0;
+      renderGitHubOctosuiteDetailsPanel();
+    }
+
+    function renderGitHubOctosuiteDetailsPanel() {
+      const details = latestOctoDetails;
       if (!details) {
         octoDetails.className = "source-details empty";
         octoDetails.textContent = "No github_octosuite details returned in this run.";
@@ -1169,7 +1028,13 @@
         ? details.technical_profile
         : {};
 
-      const repoRows = repos.slice(0, 10).map((repo) => {
+      const totalRepos = repos.length;
+      const totalRepoPages = Math.max(1, Math.ceil(totalRepos / REPO_PAGE_SIZE));
+      repoPage = Math.min(Math.max(repoPage, 0), totalRepoPages - 1);
+      const repoStart = repoPage * REPO_PAGE_SIZE;
+      const repoEnd = Math.min(repoStart + REPO_PAGE_SIZE, totalRepos);
+
+      const repoRows = repos.slice(repoStart, repoEnd).map((repo) => {
         const name = escapeHtml(repo?.name || "-");
         const language = escapeHtml(repo?.language || "-");
         const stars = escapeHtml(repo?.stars ?? 0);
@@ -1200,9 +1065,20 @@
             .join("")
         : "<span class=\"detail-note\">No language distribution available.</span>";
 
-      const moreRepos = repos.length > 10
-        ? `<div class="detail-note">Showing 10 of ${escapeHtml(repos.length)} repositories.</div>`
-        : "";
+      const repoRangeLabel = totalRepos
+        ? `Showing ${escapeHtml(repoStart + 1)} to ${escapeHtml(repoEnd)} of ${escapeHtml(totalRepos)} repositories.`
+        : "No repositories returned.";
+
+      const repoPager = `
+        <div class="repo-pager">
+          <div class="detail-note">${repoRangeLabel}</div>
+          <div class="repo-nav">
+            <button class="pager-btn" id="repo-prev-btn" type="button" ${repoPage === 0 ? "disabled" : ""} aria-label="Previous repositories">&#8592;</button>
+            <button class="pager-btn" id="repo-next-btn" type="button" ${repoPage >= totalRepoPages - 1 ? "disabled" : ""} aria-label="Next repositories">&#8594;</button>
+          </div>
+        </div>
+      `;
+
       const morePrs = pullRequests.length > 8
         ? `<div class="detail-note">Showing 8 of ${escapeHtml(pullRequests.length)} pull request events.</div>`
         : "";
@@ -1255,7 +1131,7 @@
               <tbody>${repoRows || '<tr><td colspan="5">No repositories returned.</td></tr>'}</tbody>
             </table>
           </div>
-          ${moreRepos}
+          ${repoPager}
         </div>
 
         <div class="detail-section">
@@ -1271,6 +1147,27 @@
           ${morePrs}
         </div>
       `;
+
+      const prevRepoBtn = document.getElementById("repo-prev-btn");
+      const nextRepoBtn = document.getElementById("repo-next-btn");
+
+      if (prevRepoBtn) {
+        prevRepoBtn.addEventListener("click", () => {
+          if (repoPage > 0) {
+            repoPage -= 1;
+            renderGitHubOctosuiteDetailsPanel();
+          }
+        });
+      }
+
+      if (nextRepoBtn) {
+        nextRepoBtn.addEventListener("click", () => {
+          if (repoPage < totalRepoPages - 1) {
+            repoPage += 1;
+            renderGitHubOctosuiteDetailsPanel();
+          }
+        });
+      }
     }
 
     async function requestJson(path, init) {
@@ -1515,8 +1412,7 @@
         sources: [
           { source: "maigret", claims: 29, platforms: ["github", "x", "instagram"], success: true, error: null, elapsed_seconds: 58.2 },
           { source: "academic", claims: 2, platforms: ["openalex", "semantic_scholar"], success: true, error: null, elapsed_seconds: 2.3 },
-          { source: "github_octosuite", claims: 1, platforms: ["github"], success: true, error: null, elapsed_seconds: 0.6 },
-          { source: "h8mail", claims: 1, platforms: ["linkedin"], success: true, error: null, elapsed_seconds: 0.7 }
+          { source: "github_octosuite", claims: 1, platforms: ["github"], success: true, error: null, elapsed_seconds: 0.6 }
         ],
         source_details: {
           github_octosuite: {
@@ -1551,92 +1447,6 @@
               merged_pr_count: 5,
               external_pr_count: 2
             }
-          },
-          linkedin: {
-            canonical_url: "https://linkedin.com/in/elonmusk",
-            vanity_name: "elonmusk",
-            full_name: "Elon Musk",
-            headline: "Technoking of Tesla at X",
-            location: "Austin, Texas",
-            email: null,
-            about: "Builder, founder, and systems thinker.",
-            profile_picture_url: "https://media.licdn.com/dms/image/demo.jpg",
-            connections_count: 500,
-            follower_count: 180000,
-            open_to_work: false,
-            languages: ["English", "Afrikaans"],
-            contacts: [{ type: "linkedin", value: "https://linkedin.com/in/elonmusk", label: "Profile" }],
-            experiences: [
-              {
-                company_name: "xAI",
-                company_linkedin_url: "https://www.linkedin.com/company/xai",
-                title: "Founder",
-                start_date: "2023",
-                end_date: null,
-                location: "Austin, Texas",
-                description: "Building AI systems.",
-              }
-            ],
-            educations: [
-              {
-                school_name: "University of Pennsylvania",
-                school_linkedin_url: "https://www.linkedin.com/school/university-of-pennsylvania",
-                degree: "BS",
-                field_of_study: "Physics / Economics",
-                start_date: "1989",
-                end_date: "1995",
-                description: "Studied physics and economics."
-              }
-            ],
-            profile_completeness: 10,
-            has_profile_photo: true,
-            signal_groups: {
-              tier_1_identity_anchors: {
-                canonical_url: "https://linkedin.com/in/elonmusk",
-                vanity_name: "elonmusk",
-                full_name: "Elon Musk",
-                headline: "Technoking of Tesla at X",
-                location: "Austin, Texas",
-                email: null
-              },
-              tier_2_profile_enrichment: {
-                summary: "Builder, founder, and systems thinker.",
-                profile_picture_url: "https://media.licdn.com/dms/image/demo.jpg",
-                connections_count: 500,
-                follower_count: 180000,
-                is_open_to_work: false,
-                languages: ["English", "Afrikaans"]
-              },
-              tier_3_employment_history: [
-                {
-                  company_name: "xAI",
-                  company_linkedin_url: "https://www.linkedin.com/company/xai",
-                  title: "Founder",
-                  start_date: "2023",
-                  end_date: null,
-                  location: "Austin, Texas",
-                  description: "Building AI systems."
-                }
-              ],
-              tier_4_education: [
-                {
-                  school_name: "University of Pennsylvania",
-                  school_linkedin_url: "https://www.linkedin.com/school/university-of-pennsylvania",
-                  degree: "BS",
-                  field_of_study: "Physics / Economics",
-                  start_date: "1989",
-                  end_date: "1995",
-                  description: "Studied physics and economics."
-                }
-              ],
-              tier_5_confidence_signals: {
-                profile_completeness: 10,
-                has_profile_photo: true,
-                connection_degree: "1st",
-                is_verified: true,
-                activity_recency: "2026-04-14"
-              }
-            }
           }
         },
         golden_records: [
@@ -1661,7 +1471,7 @@
           },
         },
         source_plan: {
-          selected_sources: ["academic", "github", "linkedin", "holehe", "h8mail"],
+          selected_sources: ["academic", "github", "linkedin", "holehe"],
         },
       };
       renderResolve(demo);

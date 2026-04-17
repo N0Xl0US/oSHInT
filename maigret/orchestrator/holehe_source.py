@@ -21,6 +21,7 @@ from maigret.agent.report import IdentityClaim
 logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_USED_SITE_RE = re.compile(r"^\[\+\]\s+(.+)$")
 
 
 class HoleheSource:
@@ -95,6 +96,9 @@ class HoleheSource:
                     f"Holehe timed out after {self._request_timeout}s"
                 ) from exc
 
+            stdout_text = stdout.decode("utf-8", errors="ignore")
+            stderr_text = stderr.decode("utf-8", errors="ignore")
+
             csv_files = sorted(Path(tmpdir).glob("holehe_*_results.csv"))
             rows: list[dict[str, str]] = []
             for csv_file in csv_files:
@@ -102,12 +106,16 @@ class HoleheSource:
                     reader = csv.DictReader(handle)
                     rows.extend({k: (v or "") for k, v in row.items()} for row in reader)
 
+            # holehe <email> --only-used prints positives to stdout as "[+] domain".
+            if not rows:
+                rows = _rows_from_only_used_output(stdout_text)
+
             if proc.returncode != 0:
-                stderr_text = stderr.decode("utf-8", errors="ignore").strip()
-                stdout_text = stdout.decode("utf-8", errors="ignore").strip()
+                stderr_text = stderr_text.strip()
+                stdout_text = stdout_text.strip()
                 if rows:
                     logger.warning(
-                        "Holehe exited with code %s but produced %d CSV rows; accepting output",
+                        "Holehe exited with code %s but produced %d parsed rows; accepting output",
                         proc.returncode,
                         len(rows),
                     )
@@ -118,15 +126,7 @@ class HoleheSource:
             return rows
 
     async def _spawn_holehe_process(self, email: str, cwd: str) -> asyncio.subprocess.Process:
-        args = (
-            "--no-color",
-            "--no-clear",
-            "-NP",
-            "-C",
-            "-T",
-            str(self._per_site_timeout),
-            email,
-        )
+        args = (email, "--only-used")
         venv_script = str(Path(sys.prefix).resolve() / "bin" / "holehe")
         sibling_script = str(Path(sys.executable).resolve().parent / "holehe")
 
@@ -167,6 +167,37 @@ class HoleheSource:
                         f"'{self._binary}', '{venv_script}', and '{sibling_script}'. "
                         "Install holehe in the active environment or set HOLEHE_BINARY."
                     ) from fallback_exc
+
+
+def _rows_from_only_used_output(output: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen_domains: set[str] = set()
+
+    for raw_line in output.splitlines():
+        match = _USED_SITE_RE.match(raw_line.strip())
+        if not match:
+            continue
+
+        domain = match.group(1).strip().lower()
+        if " " in domain or "." not in domain:
+            continue
+        if not domain or domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+
+        rows.append(
+            {
+                "name": domain,
+                "domain": domain,
+                "method": "",
+                "rateLimit": "",
+                "exists": "True",
+                "emailrecovery": "",
+                "phoneNumber": "",
+            }
+        )
+
+    return rows
 
 
 def _looks_like_email(value: str) -> bool:

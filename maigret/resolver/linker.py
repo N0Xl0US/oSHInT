@@ -13,6 +13,7 @@ Falls back gracefully on any Splink error (library/data edge cases).
 
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -163,6 +164,16 @@ class SplinkResolver:
 
         # Check if we have email data (changes blocking strategy)
         has_emails = (df["email_hash"] != "").any()
+        signal_profile = self._build_signal_profile(df)
+        low_signal_mode = self._is_low_signal_batch(signal_profile)
+
+        if low_signal_mode:
+            logger.info(
+                "Splink low-signal mode enabled (rows=%d unique_username_norm=%d dominant_username_ratio=%.2f)",
+                signal_profile["rows"],
+                signal_profile["unique_username_norm"],
+                signal_profile["dominant_username_ratio"],
+            )
 
         # ── STAGE 1: Candidate generation (blocking) ─────────────────────
         #
@@ -192,17 +203,18 @@ class SplinkResolver:
             # Exact normalised username (strongest signal in username-led runs)
             cl.ExactMatch("username_norm"),
 
-            # Username: Jaro-Winkler (good for short strings like usernames)
-            # Level 1: JW >= 0.92 → almost exact (johndoe vs john_doe)
-            # Level 2: JW >= 0.70 → loose fuzzy (johndoe vs john42)
-            cl.JaroWinklerAtThresholds("username_norm", [0.92, 0.70]),
-
             # Platform: exact match (strong corroborating signal)
             cl.ExactMatch("platform"),
 
             # URL domain: exact match (corroborating)
             cl.ExactMatch("url_domain"),
         ]
+
+        if not low_signal_mode:
+            # Username: Jaro-Winkler (good for short strings like usernames)
+            # Level 1: JW >= 0.92 → almost exact (johndoe vs john_doe)
+            # Level 2: JW >= 0.70 → loose fuzzy (johndoe vs john42)
+            comparisons.insert(1, cl.JaroWinklerAtThresholds("username_norm", [0.92, 0.70]))
 
         if has_emails:
             # Email hash: exact match (very strong identity signal)
@@ -219,60 +231,122 @@ class SplinkResolver:
         db_api = DuckDBAPI()
         linker = Linker(df, settings, db_api=db_api)
 
+        log_context = self._splink_log_context(low_signal_mode)
+
         # ── Train model (multi-pass EM) ──────────────────────────────────
         #
         # estimate_u: random sampling for non-match (u) probabilities
         # estimate_parameters: EM algorithm for match (m) probabilities
         # Multiple training passes with different blocking = better weights
-        try:
-            linker.training.estimate_u_using_random_sampling(max_pairs=1e5)
-
-            # Pass 1: block on username (most available signal)
-            linker.training.estimate_parameters_using_expectation_maximisation(
-                block_on("username_norm"),
-                fix_u_probabilities=True,
-            )
-
-            # Pass 2: block on platform (different signal axis)
+        with log_context:
             try:
+                max_pairs = (
+                    self._config.low_signal_u_max_pairs
+                    if low_signal_mode
+                    else int(1e5)
+                )
+                linker.training.estimate_u_using_random_sampling(max_pairs=max_pairs)
+
+                # Pass 1: block on username (most available signal)
                 linker.training.estimate_parameters_using_expectation_maximisation(
-                    block_on("platform"),
+                    block_on("username_norm"),
                     fix_u_probabilities=True,
                 )
-            except Exception:
-                logger.debug("Platform EM pass failed (may lack diversity), skipping")
 
-            # Pass 3: block on email (if available, strongest signal)
-            if has_emails:
-                try:
-                    linker.training.estimate_parameters_using_expectation_maximisation(
-                        block_on("email_hash"),
-                        fix_u_probabilities=True,
-                    )
-                except Exception:
-                    logger.debug("Email EM pass failed, skipping")
+                if not low_signal_mode:
+                    # Pass 2: block on platform (different signal axis)
+                    try:
+                        linker.training.estimate_parameters_using_expectation_maximisation(
+                            block_on("platform"),
+                            fix_u_probabilities=True,
+                        )
+                    except Exception:
+                        logger.debug("Platform EM pass failed (may lack diversity), skipping")
 
-        except Exception as exc:
-            logger.warning("Splink training failed (%s), using untrained model", exc)
+                    # Pass 3: block on email (if available, strongest signal)
+                    if has_emails:
+                        try:
+                            linker.training.estimate_parameters_using_expectation_maximisation(
+                                block_on("email_hash"),
+                                fix_u_probabilities=True,
+                            )
+                        except Exception:
+                            logger.debug("Email EM pass failed, skipping")
 
-        # ── Predict pairwise match probabilities ─────────────────────────
-        predictions = linker.inference.predict(
-            threshold_match_probability=self._config.match_threshold,
-        )
+            except Exception as exc:
+                logger.warning("Splink training failed (%s), using untrained model", exc)
 
-        # ── STAGE 3: Graph clustering (Connected Components) ─────────────
-        #
-        # Splink's cluster_pairwise_predictions_at_threshold uses
-        # Connected Components on the match graph — exactly what the spec requires.
-        # This is superior to Label Propagation for identity graphs.
-        clusters_df = linker.clustering.cluster_pairwise_predictions_at_threshold(
-            predictions,
-            threshold_match_probability=self._config.cluster_threshold,
-        )
-        clusters_pandas = clusters_df.as_pandas_dataframe()
+            # ── Predict pairwise match probabilities ─────────────────────────
+            predictions = linker.inference.predict(
+                threshold_match_probability=self._config.match_threshold,
+            )
+
+            # ── STAGE 3: Graph clustering (Connected Components) ─────────────
+            #
+            # Splink's cluster_pairwise_predictions_at_threshold uses
+            # Connected Components on the match graph — exactly what the spec requires.
+            # This is superior to Label Propagation for identity graphs.
+            clusters_df = linker.clustering.cluster_pairwise_predictions_at_threshold(
+                predictions,
+                threshold_match_probability=self._config.cluster_threshold,
+            )
+            clusters_pandas = clusters_df.as_pandas_dataframe()
 
         # ── Map clusters back to IdentityClaim objects ───────────────────
         return self._clusters_to_resolved(clusters_pandas, claims)
+
+    def _build_signal_profile(self, df: pd.DataFrame) -> dict[str, int | float]:
+        usernames = (
+            df["username_norm"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        usernames = usernames[usernames != ""]
+
+        unique_username_norm = int(usernames.nunique())
+        dominant_username_ratio = 0.0
+        if not usernames.empty:
+            dominant_username_ratio = float(usernames.value_counts(normalize=True).iloc[0])
+
+        return {
+            "rows": int(len(df)),
+            "unique_username_norm": unique_username_norm,
+            "dominant_username_ratio": dominant_username_ratio,
+        }
+
+    def _is_low_signal_batch(self, signal_profile: dict[str, int | float]) -> bool:
+        rows = int(signal_profile.get("rows", 0))
+        unique_usernames = int(signal_profile.get("unique_username_norm", 0))
+        dominant_ratio = float(signal_profile.get("dominant_username_ratio", 0.0))
+
+        return (
+            rows <= self._config.low_signal_max_claims
+            and unique_usernames <= self._config.low_signal_max_unique_usernames
+            and dominant_ratio >= self._config.low_signal_dominant_username_ratio
+        )
+
+    def _splink_log_context(self, low_signal_mode: bool):
+        if not (low_signal_mode and self._config.low_signal_suppress_splink_warnings):
+            return nullcontext()
+        return self._suppress_splink_noise()
+
+    @contextmanager
+    def _suppress_splink_noise(self):
+        with self._temporary_logger_level("splink", logging.ERROR):
+            with self._temporary_logger_level("splink.internals", logging.ERROR):
+                yield
+
+    @staticmethod
+    @contextmanager
+    def _temporary_logger_level(logger_name: str, level: int):
+        target = logging.getLogger(logger_name)
+        previous_level = target.level
+        target.setLevel(level)
+        try:
+            yield
+        finally:
+            target.setLevel(previous_level)
 
     def _clusters_to_resolved(
         self,

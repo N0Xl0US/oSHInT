@@ -23,6 +23,11 @@ class ResolverConfig(BaseSettings):
     match_threshold: float = 0.85        # conservative threshold with verified claims
     cluster_threshold: float = 0.75      # conservative cluster threshold
     min_claims_for_splink: int = 5       # below this, use deterministic fallback
+    low_signal_max_claims: int = 60
+    low_signal_max_unique_usernames: int = 3
+    low_signal_dominant_username_ratio: float = 0.85
+    low_signal_suppress_splink_warnings: bool = True
+    low_signal_u_max_pairs: int = 20_000
 
     # ── Golden Record thresholds (handover.md §1) ────────────────────────
     confidence_direct_ingest: float = 0.85

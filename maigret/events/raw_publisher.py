@@ -1,7 +1,7 @@
 """
 events/raw_publisher.py — Shared fire-and-forget raw-claim Kafka publisher.
 
-Every orchestrator source (maigret, github, github_octosuite, holehe, h8mail) calls
+Every orchestrator source (maigret, github, github_octosuite, holehe) calls
 ``publish_raw_claims()`` immediately after its search so that all raw
 IdentityClaim signals land in their respective topics *before* the
 orchestrator consolidates them into Splink.
@@ -11,7 +11,6 @@ Topic routing:
   source_tool="github"             → osint.raw.github.v1
   source_tool="github_octosuite"   → osint.raw.github.v1
   source_tool="holehe"             → osint.raw.holehe.v1
-  source_tool="h8mail"             → osint.raw.h8mail.v1
   source_tool=<other>              → osint.raw.<source_tool>.v1
 """
 
@@ -32,7 +31,6 @@ _TOPIC_MAP: dict[str, str] = {
     "github":           "osint.raw.github.v1",
     "github_octosuite": "osint.raw.github.v1",   # both sources share the same audit topic
     "holehe":           "osint.raw.holehe.v1",
-    "h8mail":           "osint.raw.h8mail.v1",
 }
 
 

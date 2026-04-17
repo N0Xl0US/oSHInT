@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from io import BytesIO
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMAIL_EXACT_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_MAILTO_RE = re.compile(r"mailto:([^\s<>\"\')\]]+)", re.IGNORECASE)
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 _HANDLE_RE = re.compile(r"(?:^|\s)@([A-Za-z0-9_.-]{2,40})")
 _TEXT_URL_RE = re.compile(r"https?://[^\s<>\"\)\]]+", re.IGNORECASE)
@@ -79,7 +81,7 @@ def parse_resume_bytes(
     if not text and not links:
         raise ResumeParseError("Unable to extract readable text from resume")
 
-    emails = sorted({email.lower() for email in _EMAIL_RE.findall(text)})
+    emails = _extract_emails(text=text, embedded_urls=embedded_urls)
     phones = sorted({p for p in (_normalize_phone(raw) for raw in _PHONE_RE.findall(text)) if p})
     usernames = _extract_usernames(text=text, emails=emails, links=links)
     institutions = _extract_institutions(text)
@@ -223,6 +225,69 @@ def _extract_links(text: str, embedded_urls: list[str]) -> list[ResumeExtractedL
         )
 
     return links
+
+
+def _extract_emails(text: str, embedded_urls: list[str]) -> list[str]:
+    emails: set[str] = set()
+
+    for match in _EMAIL_RE.findall(text):
+        normalized = _normalize_email_candidate(match)
+        if normalized:
+            emails.add(normalized)
+
+    deobfuscated = _deobfuscate_email_text(text)
+    if deobfuscated != text:
+        for match in _EMAIL_RE.findall(deobfuscated):
+            normalized = _normalize_email_candidate(match)
+            if normalized:
+                emails.add(normalized)
+
+    for candidate in _MAILTO_RE.findall(text):
+        normalized = _normalize_email_candidate(candidate)
+        if normalized:
+            emails.add(normalized)
+
+    for value in embedded_urls:
+        lowered = value.lower()
+        if not lowered.startswith("mailto:"):
+            continue
+        normalized = _normalize_email_candidate(value[7:])
+        if normalized:
+            emails.add(normalized)
+
+    return sorted(emails)
+
+
+def _deobfuscate_email_text(text: str) -> str:
+    transformed = text
+
+    substitutions = (
+        (r"\[\s*at\s*\]|\(\s*at\s*\)", "@"),
+        (r"\[\s*dot\s*\]|\(\s*dot\s*\)", "."),
+        (r"\s+at\s+", "@"),
+        (r"\s+dot\s+", "."),
+    )
+
+    for pattern, replacement in substitutions:
+        transformed = re.sub(pattern, replacement, transformed, flags=re.IGNORECASE)
+
+    return transformed
+
+
+def _normalize_email_candidate(value: str) -> str | None:
+    candidate = unquote((value or "").strip())
+    if not candidate:
+        return None
+
+    candidate = candidate.split("?", 1)[0].strip().strip(".,;:!?|)]}>'\"")
+    candidate = candidate.lower()
+    if not candidate:
+        return None
+
+    if not _EMAIL_EXACT_RE.fullmatch(candidate):
+        return None
+
+    return candidate
 
 
 def _normalize_url(value: str) -> str | None:

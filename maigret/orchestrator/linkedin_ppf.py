@@ -30,6 +30,13 @@ except ImportError as _exc:
     ) from _exc
 
 try:
+    from playwright_stealth import stealth_async as _stealth_async  # type: ignore[import-untyped]
+    _STEALTH_AVAILABLE = True
+except ImportError:
+    _STEALTH_AVAILABLE = False
+    _stealth_async = None  # type: ignore[assignment]
+
+try:
     from pipeline.models import IdentityClaim, SubjectQuery  # type: ignore[import-not-found]
 except ImportError:
     from maigret.agent.report import IdentityClaim
@@ -50,6 +57,16 @@ logger = logging.getLogger("pipeline.linkedin")
 _SOURCE = "linkedin"
 _PLATFORM = "linkedin"
 _KAFKA_TOPIC = "osint.raw.linkedin.v1"
+
+# Anti-detection defaults
+_FEED_URL = "https://www.linkedin.com/feed/"
+_DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
+_DEFAULT_VIEWPORT = {"width": 1280, "height": 800}
+_DEFAULT_LOCALE = "en-US"
 
 
 class LinkedInSessionMissingError(RuntimeError):
@@ -250,6 +267,18 @@ def _extract_username_from_profile_url(profile_url: str) -> str:
     return "linkedin"
 
 
+def _guess_full_name_from_vanity(vanity_name: str | None) -> str | None:
+    slug = _normalize_text(vanity_name)
+    if not slug:
+        return None
+    parts = [part for part in re.split(r"[-_.]+", slug) if part and not part.isdigit()]
+    if not parts:
+        return None
+    words = [part.capitalize() for part in parts]
+    guessed = " ".join(words).strip()
+    return guessed or None
+
+
 def _count_non_empty(values: dict[str, Any]) -> int:
     return sum(1 for value in values.values() if value not in (None, False, 0, "", [], {}, ()))
 
@@ -317,9 +346,10 @@ class LinkedInPPF:
 
         cooldown_remaining = await self._cooldown_remaining_seconds()
         if cooldown_remaining > 0:
+            retry_after_seconds = max(1, int(cooldown_remaining))
             message = (
                 "LinkedIn rate-limit cooldown active. "
-                f"Retry after approximately {int(cooldown_remaining)}s."
+                f"Retry after approximately {retry_after_seconds}s."
             )
             logger.warning("%s: %s", _SOURCE, message)
             return [
@@ -328,6 +358,7 @@ class LinkedInPPF:
                     profile_url=normalized_url,
                     scrape_limited=True,
                     error_message=message,
+                    retry_after_seconds=retry_after_seconds,
                 )
             ]
 
@@ -347,7 +378,15 @@ class LinkedInPPF:
                 logger.critical("%s: session expired while scraping %s | %s", _SOURCE, normalized_url, exc)
                 if exc.partial_claim is not None:
                     return [exc.partial_claim]
-                raise
+                return [
+                    self._build_url_anchor_claim(
+                        subject_query=subject_query,
+                        profile_url=normalized_url,
+                        scrape_limited=True,
+                        error_message=str(exc),
+                        session_expired=True,
+                    )
+                ]
 
             except LinkedInSessionMissingError as exc:
                 logger.critical("%s: session missing/invalid for %s | %s", _SOURCE, normalized_url, exc)
@@ -392,15 +431,59 @@ class LinkedInPPF:
                         "Verify the li_at cookie is fresh and not expired on LinkedIn's side."
                     ) from exc
 
-                if self._looks_rate_limited(message):
-                    logger.warning("%s: rate limited for %s | %s", _SOURCE, normalized_url, exc)
-                    await self._activate_rate_limit_cooldown()
+                if self._looks_session_redirect_loop(message):
+                    logger.warning(
+                        "%s: session/navigation redirect-loop for %s (attempt %d/%d) | %s",
+                        _SOURCE,
+                        normalized_url,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    last_exc = exc
+                    if attempt < max_attempts:
+                        fresh = _session_cookie_from_env()
+                        if fresh:
+                            self._session_cookie = fresh
+                        await asyncio.sleep(self._retry_backoff_seconds(attempt))
+                        continue
                     return [
                         self._build_url_anchor_claim(
                             subject_query=subject_query,
                             profile_url=normalized_url,
                             scrape_limited=True,
                             error_message=str(exc),
+                            session_expired=True,
+                        )
+                    ]
+
+                if self._looks_scrape_timeout(message):
+                    logger.warning(
+                        "%s: scrape selector timeout for %s (attempt %d/%d) | %s",
+                        _SOURCE,
+                        normalized_url,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    last_exc = exc
+                    if attempt < max_attempts:
+                        await asyncio.sleep(self._retry_backoff_seconds(attempt))
+                        continue
+                    return []
+
+                if self._looks_rate_limited(message):
+                    logger.warning("%s: rate limited for %s | %s", _SOURCE, normalized_url, exc)
+                    await self._activate_rate_limit_cooldown()
+                    cooldown_remaining = await self._cooldown_remaining_seconds()
+                    retry_after_seconds = max(1, int(cooldown_remaining)) if cooldown_remaining > 0 else None
+                    return [
+                        self._build_url_anchor_claim(
+                            subject_query=subject_query,
+                            profile_url=normalized_url,
+                            scrape_limited=True,
+                            error_message=str(exc),
+                            retry_after_seconds=retry_after_seconds,
                         )
                     ]
 
@@ -416,32 +499,102 @@ class LinkedInPPF:
     ) -> IdentityClaim | None:
         await self._apply_inter_scrape_delay()
 
-        cookie_value = self._resolve_cookie_value()
+        li_at = self._resolve_cookie_value()
+        jsessionid = self._resolve_jsessionid()
+        liap = self._resolve_liap()
+        user_agent = os.getenv("LINKEDIN_USER_AGENT") or _DEFAULT_USER_AGENT
+
         logger.info(
-            "%s: starting scrape for %s (cookie length=%d, headless=%s)",
-            _SOURCE, profile_url, len(cookie_value), self._headless,
+            "%s: starting scrape for %s (li_at len=%d, jsessionid=%s, liap=%s, stealth=%s, headless=%s)",
+            _SOURCE, profile_url, len(li_at),
+            "set" if jsessionid else "unset",
+            "set" if liap else "unset",
+            _STEALTH_AVAILABLE,
+            self._headless,
         )
 
-        async with BrowserManager(headless=self._headless) as browser:
-            # Inject the li_at cookie directly via the library's
-            # login_with_cookie() which calls page.context.add_cookies().
-            # This replaces the broken load_session() approach that expected
-            # Playwright storage-state format but received {"li_at": "..."}.
-            try:
-                await login_with_cookie(browser.page, cookie_value)
-            except Exception as exc:
-                logger.error(
-                    "%s: login_with_cookie failed for %s | %s",
-                    _SOURCE, profile_url, exc,
+        # Step 3 — realistic browser context (UA + viewport + locale)
+        async with BrowserManager(
+            headless=self._headless,
+            user_agent=user_agent,
+            viewport=_DEFAULT_VIEWPORT,
+        ) as browser:
+            page = browser.page
+
+            # Apply stealth patches before any navigation
+            if _STEALTH_AVAILABLE and _stealth_async is not None:
+                try:
+                    await _stealth_async(page)
+                    logger.debug("%s: playwright-stealth applied", _SOURCE)
+                except Exception as _se:
+                    logger.warning("%s: stealth_async failed (non-fatal): %s", _SOURCE, _se)
+
+            # Step 2 — inject all auth cookies at once via context.add_cookies
+            cookies: list[dict[str, str]] = [
+                {
+                    "name": "li_at",
+                    "value": li_at,
+                    "domain": ".linkedin.com",
+                    "path": "/",
+                },
+            ]
+            if jsessionid:
+                cookies.append(
+                    {
+                        "name": "JSESSIONID",
+                        # LinkedIn expects the value wrapped in double-quotes
+                        "value": jsessionid if jsessionid.startswith('"') else f'"{jsessionid}"',
+                        "domain": ".linkedin.com",
+                        "path": "/",
+                    }
                 )
+            if liap:
+                cookies.append(
+                    {
+                        "name": "liap",
+                        "value": liap,
+                        "domain": ".linkedin.com",
+                        "path": "/",
+                    }
+                )
+
+            try:
+                await page.context.add_cookies(cookies)  # type: ignore[attr-defined]
+            except AttributeError:
+                # Fallback for mocked contexts that expose add_cookies on the page
+                try:
+                    await page.add_cookies(cookies)  # type: ignore[attr-defined]
+                except Exception as exc:
+                    raise LinkedInSessionExpiredError(
+                        f"Cookie injection failed — could not add cookies: {exc}"
+                    ) from exc
+            except Exception as exc:
+                logger.error("%s: cookie injection failed for %s | %s", _SOURCE, profile_url, exc)
                 raise LinkedInSessionExpiredError(
                     f"Cookie injection failed — the li_at cookie may be expired: {exc}",
                 ) from exc
 
-            scraper = PersonScraper(browser.page)
+            # Step 4 — navigate to /feed/ first so LinkedIn sees warm, human-like
+            # session state before we load the profile cold.
+            try:
+                await page.goto(_FEED_URL, wait_until="domcontentloaded", timeout=20_000)  # type: ignore[call-arg]
+                await page.wait_for_timeout(2_000)  # type: ignore[call-arg]
+                logger.debug("%s: feed warm-up done, current url=%s", _SOURCE, page.url)
+            except Exception as _feed_exc:
+                # Non-fatal — if the feed fails we still attempt the profile
+                logger.warning("%s: feed warm-up failed (non-fatal): %s", _SOURCE, _feed_exc)
+
+            # Check auth immediately after /feed/ navigation
+            if _is_login_or_authwall_url(getattr(page, "url", "")):
+                raise LinkedInSessionExpiredError(
+                    "LinkedIn redirected to login/authwall after feed warm-up; "
+                    "all injected cookies may be expired."
+                )
+
+            scraper = PersonScraper(page)
             person = await scraper.scrape(profile_url)
 
-            current_url = _normalize_text(getattr(browser.page, "url", ""))
+            current_url = _normalize_text(getattr(page, "url", ""))
             if _is_login_or_authwall_url(current_url):
                 partial_claim = None
                 if _normalize_text(getattr(person, "name", None)):
@@ -467,6 +620,50 @@ class LinkedInPPF:
             await self._publish_audit(profile_url=profile_url, claim=claim)
             return claim
 
+    # ── Cookie helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_jsessionid() -> str | None:
+        """Read JSESSIONID from LINKEDIN_JSESSIONID env var or .env file."""
+        raw = os.getenv("LINKEDIN_JSESSIONID")
+        if raw is not None:
+            return raw.strip() or None
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        if not env_path.exists():
+            return None
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                if key.strip() == "LINKEDIN_JSESSIONID":
+                    return value.strip().strip('"').strip("'") or None
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _resolve_liap() -> str | None:
+        """Read liap from LINKEDIN_LIAP env var or .env file."""
+        raw = os.getenv("LINKEDIN_LIAP")
+        if raw is not None:
+            return raw.strip() or None
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        if not env_path.exists():
+            return None
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                if key.strip() == "LINKEDIN_LIAP":
+                    return value.strip().strip('"').strip("'") or None
+        except Exception:
+            pass
+        return None
+
     @staticmethod
     def _looks_rate_limited(message: str) -> bool:
         keywords = (
@@ -480,6 +677,29 @@ class LinkedInPPF:
         )
         return any(keyword in message for keyword in keywords)
 
+    @staticmethod
+    def _looks_session_redirect_loop(message: str) -> bool:
+        keywords = (
+            "err_too_many_redirects",
+            "chrome-error://chromewebdata",
+            "interrupted by another navigation",
+            "net::err_aborted",
+            "frame was detached",
+            "navigation to",
+        )
+        return any(keyword in message for keyword in keywords)
+
+    @staticmethod
+    def _looks_scrape_timeout(message: str) -> bool:
+        keywords = (
+            "wait_for_selector",
+            "locator(\"main\")",
+            "locator('main')",
+            "timeout 10000ms exceeded",
+            "timed out",
+        )
+        return any(keyword in message for keyword in keywords)
+
     def _build_url_anchor_claim(
         self,
         *,
@@ -487,6 +707,8 @@ class LinkedInPPF:
         profile_url: str,
         scrape_limited: bool,
         error_message: str | None = None,
+        retry_after_seconds: int | None = None,
+        session_expired: bool = False,
     ) -> IdentityClaim:
         anchor_person = SimpleNamespace(
             name=None,
@@ -513,10 +735,19 @@ class LinkedInPPF:
 
         raw_data = dict(claim.raw_data or {})
         signal_groups = dict(raw_data.get("signal_groups") or {})
+        vanity_name = claim.username
+        guessed_name = _guess_full_name_from_vanity(vanity_name)
+
+        if guessed_name and not raw_data.get("name"):
+            raw_data["name"] = guessed_name
+            raw_data["normalized_name"] = _normalize_name(guessed_name)
+
+        raw_data["open_to_work"] = None
+
         signal_groups["tier_1_identity_anchors"] = {
             "canonical_url": profile_url,
-            "vanity_name": claim.username,
-            "full_name": None,
+            "vanity_name": vanity_name,
+            "full_name": guessed_name,
             "headline": None,
             "location": None,
             "email": claim.email,
@@ -526,7 +757,7 @@ class LinkedInPPF:
             "profile_picture_url": None,
             "connections_count": None,
             "follower_count": None,
-            "is_open_to_work": False,
+            "is_open_to_work": None,
             "languages": [],
         }
         signal_groups["tier_5_confidence_signals"] = {
@@ -541,6 +772,8 @@ class LinkedInPPF:
             {
                 "scrape_limited": scrape_limited,
                 "scrape_error": error_message,
+                "retry_after_seconds": retry_after_seconds,
+                "session_expired": session_expired,
                 "signal_groups": signal_groups,
             }
         )

@@ -223,7 +223,6 @@ class InvestigationAgent:
         budget_tools = {
             "search_username",
             "search_academic",
-            "search_h8mail",
             "search_github",
             "resolve_identity",
         }
