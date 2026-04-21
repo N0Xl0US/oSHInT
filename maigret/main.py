@@ -47,7 +47,7 @@ from maigret.runner import (
     normalize_username,
     run_maigret,
 )
-from maigret.orchestrator.github_source import GitHubSource
+from maigret.orchestrator.github_playwright_source import GitHubPlaywrightSource
 from maigret.intake import ResumeParseError, parse_resume_bytes
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,18 @@ def parse_url(url: str):
 
 def _extract_github_username_from_links(links: list[Any]) -> str | None:
     """Extract a GitHub username from normalized resume links."""
+    profile_urls = _extract_github_profile_urls_from_links(links)
+    if not profile_urls:
+        return None
+    path = urlparse(profile_urls[0]).path.strip("/")
+    return normalize_username(path) if path else None
+
+
+def _extract_github_profile_urls_from_links(links: list[Any]) -> list[str]:
+    """Extract all unique canonical GitHub profile URLs from normalized resume links."""
+    profile_urls: list[str] = []
+    seen: set[str] = set()
+
     for link in links:
         platform = str(getattr(link, "platform", "") or "").lower()
         if platform != "github":
@@ -241,10 +253,12 @@ def _extract_github_username_from_links(links: list[Any]) -> str | None:
             continue
 
         normalized = normalize_username(candidate)
-        if normalized:
-            return normalized
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        profile_urls.append(f"https://github.com/{normalized}")
 
-    return None
+    return profile_urls
 
 
 def _extract_linkedin_url_from_links(links: list[Any]) -> str | None:
@@ -418,13 +432,41 @@ async def search_github(
     username: str,
     min_confidence: float = 0.35,
 ):
-    """Run GitHub-only datasource lookup and return identity claims."""
-    source = GitHubSource()
-    claims = await source.search(username=username, min_confidence=min_confidence)
+    """Run combined GitHub datasource lookup (Octosuite + Playwright)."""
+    claims = []
+    errors: list[str] = []
+
+    playwright_source = GitHubPlaywrightSource()
+    try:
+        claims.extend(
+            await playwright_source.search(username=username, min_confidence=min_confidence)
+        )
+    except Exception as exc:
+        errors.append(f"github_playwright: {exc}")
+
+    try:
+        from maigret.orchestrator.github_octosuite_ppf import (
+            GitHubOctosuitePPF,
+            SubjectQuery as OctosuiteSubjectQuery,
+        )
+
+        octo_adapter = GitHubOctosuitePPF()
+        octo_claims = await octo_adapter.run(
+            OctosuiteSubjectQuery(username=username, username_hint="github")
+        )
+        claims.extend([claim for claim in octo_claims if claim.confidence >= min_confidence])
+    except Exception as exc:
+        errors.append(f"github_octosuite: {exc}")
+
+    from maigret.orchestrator.orchestrator import IdentityOrchestrator
+
+    claims = IdentityOrchestrator()._reconcile_github_claims(claims)
+
     return {
         "query": username,
-        "source": "github",
+        "source": "github_fusion",
         "total_claims": len(claims),
+        "errors": errors,
         "profiles": [
             {
                 "platform": c.platform,
@@ -436,6 +478,8 @@ async def search_github(
                 "source_tool": c.source_tool,
                 "email": c.email,
                 "institutions": c.institutions,
+                "research_domains": c.research_domains,
+                "raw_data": c.raw_data,
             }
             for c in claims
         ],
@@ -496,6 +540,7 @@ async def resolve_identity_intake(
     - If no resume is uploaded, auto-run name/email-capable sources and return tool suggestions.
     """
     extracted: dict[str, Any] | None = None
+    resume_github_profile_urls: list[str] = []
     provided_email = (email or "").strip().lower() or None
     candidate_emails: list[str] = [provided_email] if provided_email else []
 
@@ -529,9 +574,11 @@ async def resolve_identity_intake(
         }
 
         name = name or parsed.name
+        resume_github_profile_urls = _extract_github_profile_urls_from_links(parsed.links)
         if not username:
-            username = _extract_github_username_from_links(parsed.links)
-            if not username and parsed.usernames:
+            if resume_github_profile_urls:
+                username = _extract_github_username_from_links(parsed.links)
+            elif parsed.usernames:
                 username = normalize_username(parsed.usernames[0])
         linkedin_url = linkedin_url or _extract_linkedin_url_from_links(parsed.links)
         for parsed_email in parsed.emails:
@@ -555,6 +602,26 @@ async def resolve_identity_intake(
     if not email and deduped_emails:
         email = deduped_emails[0]
 
+    github_profile_urls: list[str] = []
+    for raw_url in resume_github_profile_urls:
+        normalized_url = raw_url.strip()
+        if not normalized_url or normalized_url in github_profile_urls:
+            continue
+        github_profile_urls.append(normalized_url)
+
+    if not github_profile_urls and username:
+        normalized_username = normalize_username(username)
+        if normalized_username:
+            github_profile_urls.append(f"https://github.com/{normalized_username}")
+
+    github_usernames: list[str] = []
+    for profile_url in github_profile_urls:
+        path = urlparse(profile_url).path.strip("/")
+        normalized = normalize_username(path)
+        if not normalized or normalized in github_usernames:
+            continue
+        github_usernames.append(normalized)
+
     if not username and not name and not email and not linkedin_url:
         raise HTTPException(
             status_code=422,
@@ -566,6 +633,7 @@ async def resolve_identity_intake(
     orchestrator = IdentityOrchestrator()
     result = await orchestrator.resolve_identity(
         username=username,
+        github_profile_urls=github_profile_urls if github_profile_urls else None,
         name=name,
         email=email,
         emails=deduped_emails if deduped_emails else None,
@@ -590,6 +658,8 @@ async def resolve_identity_intake(
         "resolved_inputs": {
             "name": name,
             "username": username,
+            "github_profile_urls": github_profile_urls,
+            "github_usernames": github_usernames,
             "email": email,
             "emails": deduped_emails,
             "linkedin_url": linkedin_url,

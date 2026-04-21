@@ -24,6 +24,7 @@ class OrchestratorConfig(BaseSettings):
     academic_timeout: int = 30         # academic APIs are fast
     github_timeout: int = 20               # GitHub API is usually fast
     github_octosuite_timeout: int = 45     # 4 parallel API calls; allow buffer
+    github_playwright_timeout: int = 60    # browser-backed scrape + repo README collection
     blackbird_timeout: int = 240       # Blackbird may scan hundreds of sites
     spiderfoot_timeout: int = 120      # SpiderFoot username scans can take time
     holehe_timeout: int = 45           # Holehe checks many sites concurrently
@@ -35,6 +36,7 @@ class OrchestratorConfig(BaseSettings):
     min_confidence_academic: float = 0.3
     min_confidence_github: float = 0.35
     min_confidence_github_octosuite: float = 0.35
+    min_confidence_github_playwright: float = 0.35
     min_confidence_blackbird: float = 0.45
     min_confidence_spiderfoot: float = 0.45
     min_confidence_holehe: float = 0.45

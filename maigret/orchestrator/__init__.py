@@ -1,7 +1,7 @@
 """
 orchestrator — Fan-out / Resolve / Publish pipeline.
 
-Runs Maigret, Academic, GitHub Octosuite, Blackbird, SpiderFoot, and Holehe in parallel, feeds unified claims
+Runs Maigret, Academic, GitHub Octosuite, GitHub Playwright, Blackbird, SpiderFoot, and Holehe in parallel, feeds unified claims
 into Splink for entity resolution, builds golden records, and publishes
 to identity.resolved.
 """

@@ -1,8 +1,8 @@
 """
 orchestrator/orchestrator.py — IdentityOrchestrator: the 5-step pipeline.
 
-Step 1: Fan-out — kick off Maigret, Academic, GitHubOctosuite, Blackbird,
-                   SpiderFoot, Holehe in parallel
+Step 1: Fan-out — kick off Maigret, Academic, GitHubOctosuite,
+                   GitHubPlaywright, Blackbird, SpiderFoot, Holehe in parallel
 Step 2: Claim Collection — gather all IdentityClaim objects into one list
 Step 3: Feed into Splink — pass unified claims to SplinkResolver
 Step 4: Build Golden Records — assemble resolved identity objects
@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import re
+from copy import deepcopy
 from urllib.parse import urlsplit, urlunsplit
 import uuid
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from maigret.agent.report import GoldenRecord, IdentityClaim
 from maigret.kafka.producer import get_kafka_producer
 from maigret.orchestrator.config import OrchestratorConfig, get_orchestrator_config
 from maigret.orchestrator.blackbird_source import BlackbirdSource
+from maigret.orchestrator.github_playwright_source import GitHubPlaywrightSource
 from maigret.orchestrator.spiderfoot_source import SpiderFootSource
 from maigret.orchestrator.holehe_source import HoleheSource
 from maigret.orchestrator.maigret_source import MaigretSource
@@ -129,7 +131,7 @@ class IdentityOrchestrator:
     Fan-out / Resolve / Publish pipeline.
 
     Sources invoked in parallel:
-        username → maigret, github_octosuite, blackbird
+        username → maigret, github_octosuite, github_playwright, blackbird
         email    → holehe, blackbird, spiderfoot
         name     → academic
 
@@ -145,6 +147,8 @@ class IdentityOrchestrator:
     async def resolve_identity(
         self,
         username: str | None = None,
+        github_profile_urls: list[str] | None = None,
+        github_usernames: list[str] | None = None,
         name: str | None = None,
         email: str | None = None,
         emails: list[str] | None = None,
@@ -156,6 +160,8 @@ class IdentityOrchestrator:
 
         Args:
             username:     Explicit username (enables username-native sources).
+            github_profile_urls: Canonical GitHub profile URLs (preferred for GitHub sources).
+            github_usernames: Additional GitHub usernames (for resume-derived links/handles).
             name:         Full name (used by Academic search).
             email:        Primary email hint.
             emails:       Additional email hints to search alongside primary email.
@@ -165,6 +171,14 @@ class IdentityOrchestrator:
             OrchestratorResult with golden records and operational metadata.
         """
         explicit_username = self._resolve_explicit_username(username)
+        target_github_profile_urls = self._resolve_target_github_profile_urls(
+            explicit_username=explicit_username,
+            github_profile_urls=github_profile_urls,
+            github_usernames=github_usernames,
+        )
+        target_github_usernames = self._resolve_target_github_usernames_from_profile_urls(
+            target_github_profile_urls
+        )
         target_name = name.strip() if name and name.strip() else None
         target_emails = self._resolve_target_emails(
             username=username,
@@ -174,8 +188,8 @@ class IdentityOrchestrator:
         target_email = target_emails[0] if target_emails else None
         target_linkedin_url = self._resolve_linkedin_url(linkedin_url)
 
-        if not explicit_username and not target_name and not target_emails and not target_linkedin_url:
-            raise ValueError("Provide at least one of: username, name, email, or linkedin_url")
+        if not target_github_profile_urls and not target_name and not target_emails and not target_linkedin_url:
+            raise ValueError("Provide at least one of: username, github_profile_urls, github_usernames, name, email, or linkedin_url")
 
         sources_selected: list[str] = []
         if target_name:
@@ -187,7 +201,9 @@ class IdentityOrchestrator:
         if target_emails:
             sources_selected.append("spiderfoot")
         if explicit_username:
-            sources_selected.extend(["maigret", "github_octosuite"])
+            sources_selected.append("maigret")
+        if target_github_profile_urls:
+            sources_selected.extend(["github_octosuite", "github_playwright"])
         if target_linkedin_url:
             sources_selected.append("linkedin")
 
@@ -197,6 +213,8 @@ class IdentityOrchestrator:
             mode = "hybrid_explicit_username"
         elif explicit_username:
             mode = "explicit_username"
+        elif target_github_profile_urls:
+            mode = "github_profiles"
         elif target_name and (target_email or target_linkedin_url):
             mode = "name_email"
         elif target_name:
@@ -206,7 +224,7 @@ class IdentityOrchestrator:
         else:
             mode = "email_only"
 
-        subject = explicit_username or target_name or target_email or target_linkedin_url or ""
+        subject = explicit_username or (target_github_usernames[0] if target_github_usernames else None) or target_name or target_email or target_linkedin_url or ""
         if explicit_username and target_emails:
             blackbird_query_type = "username+email"
             blackbird_query_types = ["username", "email"]
@@ -230,6 +248,10 @@ class IdentityOrchestrator:
             "blackbird_query_types": blackbird_query_types,
             "spiderfoot_enabled": bool(target_emails),
             "explicit_username": explicit_username,
+            "github_profile_urls": target_github_profile_urls,
+            "github_usernames": target_github_usernames,
+            "github_octosuite_enabled": bool(target_github_profile_urls),
+            "github_playwright_enabled": bool(target_github_profile_urls),
             "name": target_name,
             "email": target_email,
             "emails": target_emails,
@@ -245,17 +267,20 @@ class IdentityOrchestrator:
         # ── Step 1: Fan-out ──────────────────────────────────────────────
         all_claims, source_stats = await self._fan_out(
             explicit_username,
+            target_github_usernames,
             target_name,
             target_emails,
             target_linkedin_url,
             institution,
             include_maigret=bool(explicit_username),
             include_academic=bool(target_name),
-            include_github_octosuite=bool(explicit_username),
+            include_github_octosuite=bool(target_github_profile_urls),
+            include_github_playwright=bool(target_github_profile_urls),
             include_blackbird=bool(explicit_username or target_emails),
             include_spiderfoot=bool(target_emails),
             include_linkedin=bool(target_linkedin_url),
         )
+        all_claims = self._reconcile_github_claims(all_claims)
         result.source_stats = source_stats
 
         # ── Step 2: Claim Collection ─────────────────────────────────────
@@ -307,14 +332,112 @@ class IdentityOrchestrator:
         username: str | None,
     ) -> str | None:
         """Normalize an explicit username; do not derive from name/email hints."""
-        if username and username.strip():
-            username_candidate = username.strip().lower()
-            if "@" in username_candidate:
+        return self._normalize_github_username_candidate(username)
+
+    @staticmethod
+    def _normalize_github_username_candidate(value: str | None) -> str | None:
+        """Normalize a GitHub username hint from raw handle or URL-like value."""
+        candidate = (value or "").strip()
+        if not candidate:
+            return None
+
+        if "://" in candidate:
+            try:
+                parsed = urlsplit(candidate)
+                path = (parsed.path or "").strip("/")
+                candidate = path.split("/", 1)[0] if path else ""
+            except Exception:
                 return None
-            username_candidate = re.sub(r"[^a-z0-9_]", "", username_candidate)
-            if username_candidate:
-                return username_candidate
-        return None
+
+        candidate = candidate.lstrip("@").lower().strip()
+        if not candidate or "@" in candidate:
+            return None
+
+        candidate = re.sub(r"[^a-z0-9_]", "", candidate)
+        return candidate or None
+
+    def _resolve_target_github_profile_urls(
+        self,
+        explicit_username: str | None,
+        github_profile_urls: list[str] | None,
+        github_usernames: list[str] | None,
+    ) -> list[str]:
+        """Resolve deduplicated canonical GitHub profile URL targets."""
+        candidates: list[str] = []
+        if explicit_username:
+            candidates.append(f"https://github.com/{explicit_username}")
+
+        for raw in github_profile_urls or []:
+            normalized = self._normalize_github_profile_url(raw)
+            if normalized:
+                candidates.append(normalized)
+
+        for raw in github_usernames or []:
+            normalized = self._normalize_github_profile_url(raw)
+            if normalized:
+                candidates.append(normalized)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            if item in seen:
+                continue
+            seen.add(item)
+            deduped.append(item)
+        return deduped
+
+    def _resolve_target_github_usernames_from_profile_urls(
+        self,
+        github_profile_urls: list[str],
+    ) -> list[str]:
+        """Extract deduplicated usernames from canonical GitHub profile URLs."""
+        usernames: list[str] = []
+        seen: set[str] = set()
+        for profile_url in github_profile_urls:
+            try:
+                path = urlsplit(profile_url).path.strip("/")
+            except Exception:
+                continue
+            normalized = self._normalize_github_username_candidate(path)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            usernames.append(normalized)
+        return usernames
+
+    def _normalize_github_profile_url(self, value: str | None) -> str | None:
+        """Normalize a GitHub profile URL (or raw handle) to canonical https://github.com/<user>."""
+        candidate = (value or "").strip()
+        if not candidate:
+            return None
+
+        if "://" not in candidate:
+            if candidate.lower().startswith(("github.com/", "www.github.com/")):
+                candidate = f"https://{candidate}"
+            else:
+                normalized = self._normalize_github_username_candidate(candidate)
+                return f"https://github.com/{normalized}" if normalized else None
+
+        try:
+            parts = urlsplit(candidate)
+        except Exception:
+            return None
+
+        if parts.scheme.lower() not in {"http", "https"}:
+            return None
+
+        host = parts.netloc.lower().split(":", 1)[0]
+        if host.startswith("www."):
+            host = host[4:]
+        if host != "github.com":
+            return None
+
+        segments = [seg for seg in (parts.path or "").split("/") if seg]
+        if not segments:
+            return None
+
+        normalized = self._normalize_github_username_candidate(segments[0])
+        return f"https://github.com/{normalized}" if normalized else None
 
     @staticmethod
     def _resolve_target_emails(
@@ -350,6 +473,7 @@ class IdentityOrchestrator:
     async def _fan_out(
         self,
         username: str | None,
+        github_usernames: list[str],
         name: str | None,
         emails: list[str],
         linkedin_url: str | None,
@@ -357,6 +481,7 @@ class IdentityOrchestrator:
         include_maigret: bool,
         include_academic: bool,
         include_github_octosuite: bool,
+        include_github_playwright: bool,
         include_blackbird: bool,
         include_spiderfoot: bool,
         include_linkedin: bool,
@@ -387,12 +512,21 @@ class IdentityOrchestrator:
                 )
             )
 
-        if include_github_octosuite and username:
+        if include_github_octosuite and github_usernames:
             tasks.append(
                 self._run_source(
                     "github_octosuite",
-                    self._invoke_github_octosuite(username),
+                    self._invoke_github_octosuite_many(github_usernames),
                     self._config.github_octosuite_timeout,
+                )
+            )
+
+        if include_github_playwright and github_usernames:
+            tasks.append(
+                self._run_source(
+                    "github_playwright",
+                    self._invoke_github_playwright_many(github_usernames),
+                    self._config.github_playwright_timeout,
                 )
             )
 
@@ -523,6 +657,158 @@ class IdentityOrchestrator:
             return payloads[0]
         return payloads
 
+    def _reconcile_github_claims(
+        self,
+        claims: list[IdentityClaim],
+    ) -> list[IdentityClaim]:
+        """
+        Reconcile GitHub claims from Octosuite and Playwright.
+
+        Goals:
+        - Fill source gaps by attaching complementary payload fragments.
+        - Increase confidence when both sources corroborate the same account.
+        """
+        grouped: dict[str, dict[str, list[IdentityClaim]]] = {}
+        for claim in claims:
+            if (claim.platform or "").lower() != "github":
+                continue
+            source_tool = (claim.source_tool or "").lower()
+            if source_tool not in {"github_octosuite", "github_playwright"}:
+                continue
+
+            key = (claim.username or "").strip().lower()
+            if not key:
+                continue
+
+            grouped.setdefault(key, {"github_octosuite": [], "github_playwright": []})
+            grouped[key][source_tool].append(claim)
+
+        for username, pair in grouped.items():
+            octo_claims = pair.get("github_octosuite", [])
+            playwright_claims = pair.get("github_playwright", [])
+            if not octo_claims or not playwright_claims:
+                continue
+
+            primary_octo = octo_claims[0]
+            primary_play = playwright_claims[0]
+            overlap = self._compute_github_overlap(primary_octo, primary_play)
+            boost = self._github_confidence_boost(overlap)
+
+            for claim in [*octo_claims, *playwright_claims]:
+                claim.confidence = min(0.98, round(claim.confidence + boost, 3))
+                claim.tier = self._tier_for_confidence(claim.confidence)
+                claim.raw_data = self._merge_github_claim_raw_data(
+                    claim=claim,
+                    octo_claim=primary_octo,
+                    playwright_claim=primary_play,
+                    overlap=overlap,
+                    boost=boost,
+                    username=username,
+                )
+
+            logger.info(
+                "Orchestrator: reconciled github evidence for %s | overlap=%s boost=%.3f",
+                username,
+                overlap,
+                boost,
+            )
+
+        return claims
+
+    @staticmethod
+    def _tier_for_confidence(confidence: float) -> str:
+        if confidence >= 0.75:
+            return "high"
+        if confidence >= 0.45:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _repo_names_from_raw(raw: dict[str, Any]) -> set[str]:
+        names: set[str] = set()
+        for item in raw.get("repos") or []:
+            if not isinstance(item, dict):
+                continue
+            repo_name = str(item.get("name") or item.get("repo") or "").strip().lower()
+            if repo_name:
+                names.add(repo_name)
+        return names
+
+    @staticmethod
+    def _compute_github_overlap(octo_claim: IdentityClaim, playwright_claim: IdentityClaim) -> dict[str, Any]:
+        octo_raw = octo_claim.raw_data if isinstance(octo_claim.raw_data, dict) else {}
+        play_raw = playwright_claim.raw_data if isinstance(playwright_claim.raw_data, dict) else {}
+
+        octo_repos = IdentityOrchestrator._repo_names_from_raw(octo_raw)
+        play_repos = IdentityOrchestrator._repo_names_from_raw(play_raw)
+        repo_overlap = octo_repos.intersection(play_repos)
+
+        octo_url = str(octo_claim.url or "").rstrip("/").lower()
+        play_url = str(playwright_claim.url or "").rstrip("/").lower()
+        profile_url_match = bool(octo_url and play_url and octo_url == play_url)
+
+        return {
+            "profile_url_match": profile_url_match,
+            "repo_overlap_count": len(repo_overlap),
+            "repo_overlap_sample": sorted(repo_overlap)[:5],
+            "both_sources_present": True,
+        }
+
+    @staticmethod
+    def _github_confidence_boost(overlap: dict[str, Any]) -> float:
+        boost = 0.04
+        if overlap.get("profile_url_match"):
+            boost += 0.03
+
+        repo_overlap_count = int(overlap.get("repo_overlap_count") or 0)
+        if repo_overlap_count > 0:
+            boost += min(0.10, repo_overlap_count * 0.02)
+
+        return round(min(boost, 0.14), 3)
+
+    @staticmethod
+    def _merge_github_claim_raw_data(
+        claim: IdentityClaim,
+        octo_claim: IdentityClaim,
+        playwright_claim: IdentityClaim,
+        overlap: dict[str, Any],
+        boost: float,
+        username: str,
+    ) -> dict[str, Any]:
+        base = deepcopy(claim.raw_data) if isinstance(claim.raw_data, dict) else {}
+        octo_raw = deepcopy(octo_claim.raw_data) if isinstance(octo_claim.raw_data, dict) else {}
+        play_raw = deepcopy(playwright_claim.raw_data) if isinstance(playwright_claim.raw_data, dict) else {}
+
+        if claim.source_tool == "github_octosuite":
+            profile = base.setdefault("profile", {})
+            play_profile = play_raw.get("profile") if isinstance(play_raw.get("profile"), dict) else {}
+            if isinstance(play_profile, dict):
+                if not profile.get("display_name"):
+                    account = play_profile.get("account") if isinstance(play_profile.get("account"), dict) else {}
+                    profile["display_name"] = account.get("display_name")
+                if play_profile.get("profile_readme"):
+                    profile["profile_readme"] = play_profile.get("profile_readme")
+                    profile["profile_readme_source"] = play_profile.get("profile_readme_source")
+            if not base.get("repos") and play_raw.get("repos"):
+                base["repos"] = play_raw.get("repos")
+
+        if claim.source_tool == "github_playwright":
+            enrichment = base.setdefault("cross_source_enrichment", {})
+            if octo_raw.get("language_distribution"):
+                enrichment["language_distribution"] = octo_raw.get("language_distribution")
+            if octo_raw.get("pull_request_events"):
+                enrichment["pull_request_events"] = octo_raw.get("pull_request_events")[:25]
+            if octo_raw.get("orgs"):
+                enrichment["orgs"] = octo_raw.get("orgs")
+
+        enrichment = base.setdefault("cross_source_enrichment", {})
+        enrichment["username"] = username
+        enrichment["corroborated_by"] = ["github_octosuite", "github_playwright"]
+        enrichment["overlap"] = overlap
+        enrichment["confidence_boost"] = boost
+
+        return base
+
     # ── Source invokers ──────────────────────────────────────────────────────
 
     async def _invoke_maigret(self, username: str) -> list[IdentityClaim]:
@@ -573,6 +859,76 @@ class IdentityOrchestrator:
         claims = await adapter.run(query)
         threshold = self._config.min_confidence_github_octosuite
         return [c for c in claims if c.confidence >= threshold]
+
+    async def _invoke_github_playwright(self, username: str) -> list[IdentityClaim]:
+        """
+        Invoke the Playwright-powered GitHub adapter and return IdentityClaims.
+
+        This source enriches claims with profile README and repository README
+        content for downstream analysis while still producing a Splink-ready
+        IdentityClaim.
+        """
+        source = GitHubPlaywrightSource(request_timeout=self._config.github_playwright_timeout)
+        claims = await source.search(
+            username=username,
+            min_confidence=self._config.min_confidence_github_playwright,
+        )
+        return claims
+
+    async def _invoke_github_octosuite_many(self, usernames: list[str]) -> list[IdentityClaim]:
+        """Invoke GitHub Octosuite for all usernames and merge deduplicated claims."""
+        return await self._invoke_username_many(
+            usernames,
+            self._invoke_github_octosuite,
+            source_name="github_octosuite",
+        )
+
+    async def _invoke_github_playwright_many(self, usernames: list[str]) -> list[IdentityClaim]:
+        """Invoke GitHub Playwright for all usernames and merge deduplicated claims."""
+        return await self._invoke_username_many(
+            usernames,
+            self._invoke_github_playwright,
+            source_name="github_playwright",
+        )
+
+    async def _invoke_username_many(
+        self,
+        usernames: list[str],
+        invoker: Any,
+        source_name: str,
+    ) -> list[IdentityClaim]:
+        """Invoke a username-based source for each username and merge deduplicated claims."""
+        if not usernames:
+            return []
+
+        results = await asyncio.gather(
+            *(invoker(username) for username in usernames),
+            return_exceptions=True,
+        )
+
+        merged: list[IdentityClaim] = []
+        for username, result in zip(usernames, results):
+            if isinstance(result, Exception):
+                logger.warning("%s invocation failed for %s: %s", source_name, username, result)
+                continue
+            merged.extend(result)
+
+        deduped: list[IdentityClaim] = []
+        seen: set[tuple[str, str, str | None, str, str | None]] = set()
+        for claim in merged:
+            key = (
+                claim.platform,
+                claim.username.lower(),
+                claim.url,
+                claim.source_tool,
+                (claim.email or "").lower() or None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(claim)
+
+        return deduped
 
     async def _invoke_blackbird(
         self,
