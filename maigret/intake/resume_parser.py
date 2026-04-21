@@ -10,6 +10,11 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _EMAIL_EXACT_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 _MAILTO_RE = re.compile(r"mailto:([^\s<>\"\')\]]+)", re.IGNORECASE)
+_CONCAT_SOCIAL_SUFFIX_RE = re.compile(
+    r"^([a-z0-9._%+-]+@[a-z0-9.-]+\.(?:com|net|org|edu|gov|io|co|me|ai))(?:www\.)?"
+    r"(?:linkedin\.com|github\.com|twitter\.com|x\.com|instagram\.com|reddit\.com)(?:/.*)?$",
+    re.IGNORECASE,
+)
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
 _HANDLE_RE = re.compile(r"(?:^|\s)@([A-Za-z0-9_.-]{2,40})")
 _TEXT_URL_RE = re.compile(r"https?://[^\s<>\"\)\]]+", re.IGNORECASE)
@@ -281,6 +286,7 @@ def _normalize_email_candidate(value: str) -> str | None:
 
     candidate = candidate.split("?", 1)[0].strip().strip(".,;:!?|)]}>'\"")
     candidate = candidate.lower()
+    candidate = _trim_concatenated_social_suffix(candidate)
     if not candidate:
         return None
 
@@ -288,6 +294,14 @@ def _normalize_email_candidate(value: str) -> str | None:
         return None
 
     return candidate
+
+
+def _trim_concatenated_social_suffix(candidate: str) -> str:
+    """Trim social URL fragments concatenated directly after an email token."""
+    match = _CONCAT_SOCIAL_SUFFIX_RE.match(candidate)
+    if not match:
+        return candidate
+    return match.group(1)
 
 
 def _normalize_url(value: str) -> str | None:

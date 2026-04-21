@@ -21,6 +21,7 @@ dependencies = [
     "holehe>=1.61",
     "octosuite>=2.0.0",
     "linkedin_scraper>=3.0.0",
+    "playwright>=1.58.0",
     "playwright-stealth>=1.0.6",
 ]
 
