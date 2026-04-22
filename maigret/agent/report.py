@@ -98,6 +98,7 @@ class GoldenRecord(BaseModel):
     aliases: list[Alias] = Field(default_factory=list)
     attributes: GoldenRecordAttributes = Field(default_factory=GoldenRecordAttributes)
     sources: list[SourceRecord] = Field(default_factory=list)
+    raw_source_payloads: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     merge_history: list[MergeRecord] = Field(default_factory=list)
     quality_flags: QualityFlags = Field(default_factory=QualityFlags)
     data_governance: DataGovernance = Field(default_factory=DataGovernance)

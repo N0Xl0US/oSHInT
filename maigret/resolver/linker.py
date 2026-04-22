@@ -152,9 +152,6 @@ class SplinkResolver:
           2. Pairwise matching (comparisons + EM-trained model)
           3. Graph clustering (Connected Components)
         """
-        import splink.comparison_library as cl
-        from splink import DuckDBAPI, Linker, SettingsCreator, block_on
-
         # ── Flatten to DataFrame ─────────────────────────────────────────
         df = flatten_claims(claims)
         logger.info("Splink input: %d rows × %d cols", len(df), len(df.columns))
@@ -174,6 +171,15 @@ class SplinkResolver:
                 signal_profile["unique_username_norm"],
                 signal_profile["dominant_username_ratio"],
             )
+
+        if low_signal_mode and self._config.low_signal_force_deterministic:
+            logger.info(
+                "Splink low-signal deterministic override enabled; using deterministic clustering"
+            )
+            return self._deterministic_resolve(claims)
+
+        import splink.comparison_library as cl
+        from splink import DuckDBAPI, Linker, SettingsCreator, block_on
 
         # ── STAGE 1: Candidate generation (blocking) ─────────────────────
         #
@@ -197,28 +203,19 @@ class SplinkResolver:
         ])
 
         # ── STAGE 2: Pairwise matching (comparisons) ────────────────────
-        #
-        # Multi-level comparisons with different similarity thresholds.
-        comparisons = [
-            # Exact normalised username (strongest signal in username-led runs)
-            cl.ExactMatch("username_norm"),
+        comparisons = self._build_comparisons(
+            cl=cl,
+            has_emails=has_emails,
+            low_signal_mode=low_signal_mode,
+        )
 
-            # Platform: exact match (strong corroborating signal)
-            cl.ExactMatch("platform"),
-
-            # URL domain: exact match (corroborating)
-            cl.ExactMatch("url_domain"),
-        ]
-
-        if not low_signal_mode:
-            # Username: Jaro-Winkler (good for short strings like usernames)
-            # Level 1: JW >= 0.92 → almost exact (johndoe vs john_doe)
-            # Level 2: JW >= 0.70 → loose fuzzy (johndoe vs john42)
-            comparisons.insert(1, cl.JaroWinklerAtThresholds("username_norm", [0.92, 0.70]))
-
-        if has_emails:
-            # Email hash: exact match (very strong identity signal)
-            comparisons.insert(0, cl.ExactMatch("email_hash"))
+        match_threshold, cluster_threshold = self._resolve_thresholds(low_signal_mode)
+        logger.info(
+            "Splink thresholds: match=%.2f cluster=%.2f (low_signal_mode=%s)",
+            match_threshold,
+            cluster_threshold,
+            low_signal_mode,
+        )
 
         settings = SettingsCreator(
             link_type="dedupe_only",
@@ -278,7 +275,7 @@ class SplinkResolver:
 
             # ── Predict pairwise match probabilities ─────────────────────────
             predictions = linker.inference.predict(
-                threshold_match_probability=self._config.match_threshold,
+                threshold_match_probability=match_threshold,
             )
 
             # ── STAGE 3: Graph clustering (Connected Components) ─────────────
@@ -288,12 +285,51 @@ class SplinkResolver:
             # This is superior to Label Propagation for identity graphs.
             clusters_df = linker.clustering.cluster_pairwise_predictions_at_threshold(
                 predictions,
-                threshold_match_probability=self._config.cluster_threshold,
+                threshold_match_probability=cluster_threshold,
             )
             clusters_pandas = clusters_df.as_pandas_dataframe()
 
         # ── Map clusters back to IdentityClaim objects ───────────────────
         return self._clusters_to_resolved(clusters_pandas, claims)
+
+    def _resolve_thresholds(self, low_signal_mode: bool) -> tuple[float, float]:
+        """Return (match_threshold, cluster_threshold) for the current signal profile."""
+        if low_signal_mode:
+            return (
+                float(self._config.low_signal_match_threshold),
+                float(self._config.low_signal_cluster_threshold),
+            )
+        return (float(self._config.match_threshold), float(self._config.cluster_threshold))
+
+    def _build_comparisons(self, cl, has_emails: bool, low_signal_mode: bool):
+        """
+        Build Splink comparison stack.
+
+        In low-signal mode, avoid hard penalties from platform/domain mismatches
+        so same-username profiles across sources can collapse into a single entity.
+        """
+        comparisons = [
+            # Always keep exact username as the strongest non-email anchor.
+            cl.ExactMatch("username_norm"),
+            # Path slug often carries the profile handle across domains.
+            cl.ExactMatch("url_path_slug"),
+        ]
+
+        if has_emails:
+            comparisons.insert(0, cl.ExactMatch("email_hash"))
+
+        if low_signal_mode:
+            # Conservative fuzzy layer to connect minor username variations.
+            comparisons.insert(1, cl.JaroWinklerAtThresholds("username_norm", [0.96, 0.88]))
+            return comparisons
+
+        comparisons.extend([
+            # Platform/domain corroboration helps in mixed-signal batches.
+            cl.ExactMatch("platform"),
+            cl.ExactMatch("url_domain"),
+            cl.JaroWinklerAtThresholds("username_norm", [0.92, 0.70]),
+        ])
+        return comparisons
 
     def _build_signal_profile(self, df: pd.DataFrame) -> dict[str, int | float]:
         usernames = (

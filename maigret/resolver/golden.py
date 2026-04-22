@@ -10,6 +10,7 @@ Implements conflict-aware merge logic:
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import hmac
 import logging
@@ -102,6 +103,15 @@ def _cluster_to_golden_record(
         for tool in sorted(source_tools)
     ]
 
+    # ── Raw source payload handoff (for phase-2 consumers) ───────────────
+    raw_source_payloads: dict[str, list[dict]] = {}
+    for claim in claims:
+        if not isinstance(getattr(claim, "raw_data", None), dict):
+            continue
+        if not claim.raw_data:
+            continue
+        raw_source_payloads.setdefault(claim.source_tool, []).append(deepcopy(claim.raw_data))
+
     # ── Merge history ─────────────────────────────────────────────────────
     merge_history = [
         MergeRecord(
@@ -128,6 +138,7 @@ def _cluster_to_golden_record(
             co_authors=co_authors,
         ),
         sources=sources,
+        raw_source_payloads=raw_source_payloads,
         merge_history=merge_history,
         quality_flags=quality_flags,
     )

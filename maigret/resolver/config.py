@@ -26,6 +26,9 @@ class ResolverConfig(BaseSettings):
     low_signal_max_claims: int = 60
     low_signal_max_unique_usernames: int = 3
     low_signal_dominant_username_ratio: float = 0.85
+    low_signal_force_deterministic: bool = True
+    low_signal_match_threshold: float = 0.65
+    low_signal_cluster_threshold: float = 0.55
     low_signal_suppress_splink_warnings: bool = True
     low_signal_u_max_pairs: int = 20_000
 
