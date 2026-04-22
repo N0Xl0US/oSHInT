@@ -1,4 +1,6 @@
 .git
+**/.git
+**/.git/**
 .gitignore
 .venv
 venv
@@ -17,6 +19,12 @@ __pycache__/
 documents/
 maigret_mcp_server.egg-info/
 scripts/
+blackbird/
+blackbird/**
+logs/
+results/
+reports/
+data/
 kafka.test.py
 make_resume.py
 placeholder.html

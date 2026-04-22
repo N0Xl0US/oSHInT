@@ -15,6 +15,7 @@ Kafka audit topic: osint.raw.github.v1
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -24,22 +25,40 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, TypedDict
 from uuid import uuid4
 
-# ── Octosuite import guard ────────────────────────────────────────────────────
-# Fail loudly at import time — not at call time — so mis-configured containers
-# surface the problem immediately rather than returning silent empty lists.
-
-try:
-    from octosuite import User  # type: ignore[import-untyped]
-except ImportError as _exc:
-    raise ImportError(
-        "octosuite is required for GitHubOctosuitePPF. "
-        "Install it with:  pip install octosuite\n"
-        f"Original error: {_exc}"
-    ) from _exc
+import httpx
 
 from maigret.agent.report import IdentityClaim
 
 logger = logging.getLogger("pipeline.github_octosuite")
+
+
+def _resolve_octosuite_user_class() -> type[Any] | None:
+    """
+    Resolve an Octosuite User class across package layout variations.
+
+    Some builds expose ``User`` at ``octosuite.User`` while others keep it in
+    nested modules only (for example ``octosuite.api.models.User``).
+    """
+    candidates = [
+        ("octosuite", "User"),
+        ("octosuite.api.models", "User"),
+        ("octosuite.models", "User"),
+        ("octosuite.user", "User"),
+    ]
+
+    for module_name, attr_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        cls = getattr(module, attr_name, None)
+        if cls is not None:
+            return cls
+
+    return None
+
+
+_OCTOSUITE_USER_CLASS = _resolve_octosuite_user_class()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -148,6 +167,7 @@ class GitHubOctosuitePPF:
         # Token from env or explicit injection (e.g. tests)
         self._token: str | None = api_token or os.getenv("GITHUB_API_TOKEN") or None
         self._sem = executor_semaphore or asyncio.Semaphore(_EXECUTOR_SEMAPHORE_LIMIT)
+        self._user_class = _OCTOSUITE_USER_CLASS
 
     # ── Public entry point ────────────────────────────────────────────────────
 
@@ -232,15 +252,46 @@ class GitHubOctosuitePPF:
 
     # ── Octosuite user builder ────────────────────────────────────────────────
 
-    def _build_user(self, username: str) -> User:
-        """Construct an Octosuite User, injecting token if available."""
-        if self._token:
+    def _build_user(self, username: str) -> Any:
+        """Construct an Octosuite User when available, else use REST fallback client."""
+        if self._user_class is not None:
             try:
-                return User(username, token=self._token)
-            except TypeError:
-                # Older octosuite versions may not accept a token kwarg
-                pass
-        return User(username)
+                if self._token:
+                    try:
+                        user = self._user_class(username, token=self._token)
+                    except TypeError:
+                        # Some octosuite versions only accept a username arg.
+                        user = self._user_class(username)
+                else:
+                    user = self._user_class(username)
+
+                if self._supports_octosuite_contract(user):
+                    return user
+
+                logger.warning(
+                    "%s: octosuite User object missing expected methods; falling back to REST adapter",
+                    _SOURCE,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "%s: octosuite User construction failed (%s); falling back to REST adapter",
+                    _SOURCE,
+                    exc,
+                )
+        else:
+            logger.warning(
+                "%s: octosuite User class unavailable; using REST adapter fallback",
+                _SOURCE,
+            )
+
+        return _GitHubRestUser(username=username, token=self._token)
+
+    @staticmethod
+    def _supports_octosuite_contract(user: Any) -> bool:
+        return all(
+            callable(getattr(user, method_name, None))
+            for method_name in ("exists", "repos", "events", "orgs")
+        )
 
     # ── Executor-wrapped fetchers ─────────────────────────────────────────────
 
@@ -256,7 +307,7 @@ class GitHubOctosuitePPF:
             return await loop.run_in_executor(None, fn, *args)
 
     async def _fetch_profile(
-        self, user: User, username: str
+        self, user: Any, username: str
     ) -> _ProfileDict | None:
         """
         Fetch user profile.
@@ -281,7 +332,7 @@ class GitHubOctosuitePPF:
         return _parse_profile(raw)
 
     async def _fetch_repos(
-        self, user: User, username: str
+        self, user: Any, username: str
     ) -> list[_RepoDict]:
         """Fetch up to 100 public repos."""
         raw: list[dict[str, Any]] = await self._run_in_executor(
@@ -294,7 +345,7 @@ class GitHubOctosuitePPF:
         return [_parse_repo(r) for r in raw if isinstance(r, dict)]
 
     async def _fetch_events(
-        self, user: User, username: str
+        self, user: Any, username: str
     ) -> list[_PREventDict]:
         """Fetch up to 100 public events, filtering for PullRequestEvent only."""
         raw: list[dict[str, Any]] = await self._run_in_executor(
@@ -314,7 +365,7 @@ class GitHubOctosuitePPF:
         return pr_events
 
     async def _fetch_orgs(
-        self, user: User, username: str
+        self, user: Any, username: str
     ) -> list[_OrgDict]:
         """Fetch up to 50 org memberships."""
         raw: list[dict[str, Any]] = await self._run_in_executor(
@@ -392,7 +443,108 @@ class GitHubOctosuitePPF:
 # directly to run_in_executor.
 
 
-def _call_user_profile(user: User) -> dict[str, Any]:
+class _GitHubRestUser:
+    """Compatibility user object that mirrors the subset of Octosuite APIs we need."""
+
+    def __init__(self, username: str, token: str | None = None) -> None:
+        self._username = username
+        self._token = token
+        self._profile_cache: dict[str, Any] | None = None
+
+        # Octosuite-like profile attributes populated after exists().
+        self.name: str | None = None
+        self.login: str | None = username
+        self.location: str | None = None
+        self.bio: str | None = None
+        self.company: str | None = None
+        self.blog: str | None = None
+        self.public_repos: int = 0
+        self.followers: int = 0
+        self.following: int = 0
+        self.created_at: str | None = None
+        self.updated_at: str | None = None
+
+    def exists(self) -> bool:
+        try:
+            profile = self._get_profile()
+        except _GitHubNotFoundError:
+            return False
+
+        self._hydrate_profile_fields(profile)
+        return True
+
+    def repos(self, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            f"/users/{self._username}/repos",
+            params={"page": page, "per_page": per_page, "type": "owner", "sort": "updated"},
+        )
+        return payload if isinstance(payload, list) else []
+
+    def events(self, page: int = 1, per_page: int = 100) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            f"/users/{self._username}/events/public",
+            params={"page": page, "per_page": per_page},
+        )
+        return payload if isinstance(payload, list) else []
+
+    def orgs(self, page: int = 1, per_page: int = 50) -> list[dict[str, Any]]:
+        payload = self._request_json(
+            f"/users/{self._username}/orgs",
+            params={"page": page, "per_page": per_page},
+        )
+        return payload if isinstance(payload, list) else []
+
+    def _get_profile(self) -> dict[str, Any]:
+        if self._profile_cache is None:
+            payload = self._request_json(f"/users/{self._username}")
+            if not isinstance(payload, dict):
+                raise RuntimeError("GitHub profile response is not an object")
+            self._profile_cache = payload
+        return self._profile_cache
+
+    def _hydrate_profile_fields(self, profile: dict[str, Any]) -> None:
+        self.name = _clean_str(profile.get("name"))
+        self.login = _clean_str(profile.get("login")) or self._username
+        self.location = _clean_str(profile.get("location"))
+        self.bio = _clean_str(profile.get("bio"))
+        self.company = _clean_str(profile.get("company"))
+        self.blog = _clean_str(profile.get("blog"))
+        self.public_repos = int(profile.get("public_repos") or 0)
+        self.followers = int(profile.get("followers") or 0)
+        self.following = int(profile.get("following") or 0)
+        self.created_at = _clean_str(profile.get("created_at"))
+        self.updated_at = _clean_str(profile.get("updated_at"))
+
+    def _request_json(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        headers: dict[str, str] = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "maigret-osint/2.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        url = f"https://api.github.com{path}"
+        with httpx.Client(timeout=20) as client:
+            response = client.get(url, params=params, headers=headers)
+
+        if response.status_code == 404:
+            raise _GitHubNotFoundError(f"GitHub resource not found (HTTP 404): {path}")
+        if response.status_code in {403, 429}:
+            raise _RateLimitedError(f"GitHub API rate limited (HTTP {response.status_code})")
+        if response.status_code >= 500:
+            raise RuntimeError(f"GitHub API temporary failure (HTTP {response.status_code})")
+        if response.status_code != 200:
+            raise RuntimeError(f"GitHub API unexpected status (HTTP {response.status_code})")
+
+        return response.json()
+
+
+def _call_user_profile(user: Any) -> dict[str, Any]:
     """
     Retrieve public profile data for the user.
 
@@ -413,7 +565,7 @@ def _call_user_profile(user: User) -> dict[str, Any]:
         raise
 
 
-def _call_user_repos(user: User) -> list[dict[str, Any]]:
+def _call_user_repos(user: Any) -> list[dict[str, Any]]:
     try:
         result = user.repos(page=1, per_page=100)
         return result if isinstance(result, list) else []
@@ -425,7 +577,7 @@ def _call_user_repos(user: User) -> list[dict[str, Any]]:
         return []
 
 
-def _call_user_events(user: User) -> list[dict[str, Any]]:
+def _call_user_events(user: Any) -> list[dict[str, Any]]:
     try:
         result = user.events(page=1, per_page=100)
         return result if isinstance(result, list) else []
@@ -434,7 +586,7 @@ def _call_user_events(user: User) -> list[dict[str, Any]]:
         return []
 
 
-def _call_user_orgs(user: User) -> list[dict[str, Any]]:
+def _call_user_orgs(user: Any) -> list[dict[str, Any]]:
     try:
         result = user.orgs(page=1, per_page=50)
         return result if isinstance(result, list) else []
@@ -446,7 +598,7 @@ def _call_user_orgs(user: User) -> list[dict[str, Any]]:
 # ── Octosuite attribute extraction ────────────────────────────────────────────
 
 
-def _extract_octosuite_profile(user: User) -> dict[str, Any]:
+def _extract_octosuite_profile(user: Any) -> dict[str, Any]:
     """
     Pull all needed fields from an octosuite User instance.
 
@@ -756,6 +908,10 @@ def _compute_needs_review(profile: _ProfileDict) -> bool:
 
 class _RateLimitedError(Exception):
     """Sentinel for GitHub 403/429 conditions inside executor threads."""
+
+
+class _GitHubNotFoundError(Exception):
+    """Sentinel for GitHub 404 responses in REST fallback adapter."""
 
 
 def _clean_str(value: Any) -> str | None:
