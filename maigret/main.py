@@ -48,6 +48,7 @@ from maigret.runner import (
     run_maigret,
 )
 from maigret.orchestrator.github_playwright_source import GitHubPlaywrightSource
+from maigret.enricher import MaigretEnricher, ResumeInput
 from maigret.intake import ResumeParseError, parse_resume_bytes
 
 logger = logging.getLogger(__name__)
@@ -272,6 +273,46 @@ def _extract_linkedin_url_from_links(links: list[Any]) -> str | None:
         if not url:
             continue
 
+        try:
+            from maigret.orchestrator.linkedin_ppf import normalize_linkedin_profile_url
+
+            normalized = normalize_linkedin_profile_url(url)
+            if normalized:
+                return normalized
+        except Exception:
+            return url
+
+    return None
+
+
+def _extract_platform_urls_from_social_accounts(accounts: list[Any], platform: str) -> list[str]:
+    """Extract unique profile URLs for a target platform from enricher output."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    target = (platform or "").strip().lower()
+
+    for account in accounts:
+        account_platform = str(getattr(account, "platform", "") or "").strip().lower()
+        if account_platform != target:
+            continue
+
+        profile_url = str(getattr(account, "profile_url", "") or "").strip()
+        if not profile_url or profile_url in seen:
+            continue
+
+        seen.add(profile_url)
+        urls.append(profile_url)
+
+    return urls
+
+
+def _extract_linkedin_url_from_social_accounts(accounts: list[Any]) -> str | None:
+    """Extract the first normalized LinkedIn profile URL from enricher social accounts."""
+    linkedin_urls = _extract_platform_urls_from_social_accounts(accounts, "linkedin")
+    if not linkedin_urls:
+        return None
+
+    for url in linkedin_urls:
         try:
             from maigret.orchestrator.linkedin_ppf import normalize_linkedin_profile_url
 
@@ -541,6 +582,7 @@ async def resolve_identity_intake(
     """
     extracted: dict[str, Any] | None = None
     resume_github_profile_urls: list[str] = []
+    enriched_social_accounts: list[dict[str, Any]] = []
     provided_email = (email or "").strip().lower() or None
     candidate_emails: list[str] = [provided_email] if provided_email else []
 
@@ -573,14 +615,45 @@ async def resolve_identity_intake(
             "text_length": parsed.text_length,
         }
 
+        try:
+            enriched_accounts = await MaigretEnricher().scan(
+                [
+                    ResumeInput(
+                        content=raw_bytes,
+                        filename=resume.filename,
+                        content_type=resume.content_type,
+                        username_hint=username,
+                    )
+                ]
+            )
+        except Exception as exc:
+            logger.warning("Resume enricher failed for '%s': %s", resume.filename, exc)
+            enriched_accounts = []
+
+        enriched_social_accounts = [
+            {
+                "platform": str(getattr(account, "platform", "") or ""),
+                "profile_url": str(getattr(account, "profile_url", "") or ""),
+                "username": str(getattr(getattr(account, "username", None), "value", "") or ""),
+                "followers_count": getattr(account, "followers_count", None),
+                "following_count": getattr(account, "following_count", None),
+                "posts_count": getattr(account, "posts_count", None),
+            }
+            for account in enriched_accounts
+        ]
+
         name = name or parsed.name
         resume_github_profile_urls = _extract_github_profile_urls_from_links(parsed.links)
+        resume_github_profile_urls.extend(
+            _extract_platform_urls_from_social_accounts(enriched_accounts, "github")
+        )
         if not username:
             if resume_github_profile_urls:
                 username = _extract_github_username_from_links(parsed.links)
             elif parsed.usernames:
                 username = normalize_username(parsed.usernames[0])
         linkedin_url = linkedin_url or _extract_linkedin_url_from_links(parsed.links)
+        linkedin_url = linkedin_url or _extract_linkedin_url_from_social_accounts(enriched_accounts)
         for parsed_email in parsed.emails:
             value = (parsed_email or "").strip().lower()
             if "@" in value:
@@ -621,6 +694,9 @@ async def resolve_identity_intake(
         if not normalized or normalized in github_usernames:
             continue
         github_usernames.append(normalized)
+
+    if not username and github_usernames:
+        username = github_usernames[0]
 
     if not username and not name and not email and not linkedin_url:
         raise HTTPException(
@@ -666,6 +742,7 @@ async def resolve_identity_intake(
             "institution": institution,
         },
         "extracted": extracted,
+        "enriched_social_accounts": enriched_social_accounts,
     }
 
     if extracted is None:
